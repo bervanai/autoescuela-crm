@@ -352,10 +352,37 @@ function Dashboard({students,slots,professors,user}){
 }
 
 // ─── ALUMNOS ─────────────────────────────────────────────────────────────────
+// Tipos de vehículo con sus iconos y etiquetas
+const VEHICLE_TYPES=[
+  {id:'manual',     label:'Manual',      icon:'settings',        color:'#1e3a5f'},
+  {id:'automatico', label:'Automático',  icon:'auto_mode',       color:'#7c2d8c'},
+  {id:'moto',       label:'Moto',        icon:'two_wheeler',     color:'#0e6856'},
+  {id:'camion',     label:'Camión',      icon:'local_shipping',  color:'#b45309'},
+];
+function getVehicleType(id){ return VEHICLE_TYPES.find(v=>v.id===id)||VEHICLE_TYPES[0]; }
+
+// Calcula duración de clase: 45min si mismo tipo vehículo, 60min si cambia
+function calcDuration(profId, date, time, studentVehicleType, allSlots){
+  const slotsArr=Array.isArray(allSlots)?allSlots:Object.values(allSlots||{});
+  // Slot anterior de ese profesor ese día (el de la hora anterior)
+  const [h,m]=time.split(':').map(Number);
+  const prevMins=h*60+m-60; // buscar clase que termine aquí (aprox)
+  const daySlots=slotsArr.filter(s=>s.profId===profId&&s.date===date&&s.studentId&&s.status!=='cancelled'&&s.id!=='__new__');
+  if(!daySlots.length) return 45;
+  // Encontrar slot más cercano anterior
+  const prev=daySlots
+    .map(s=>{const[sh,sm]=s.time.split(':').map(Number);return{...s,mins:sh*60+sm};})
+    .filter(s=>s.mins<h*60+m)
+    .sort((a,b)=>b.mins-a.mins)[0];
+  if(!prev) return 45;
+  return prev.vehicleType===studentVehicleType ? 45 : 60;
+}
+
 function StudentModal({student,professors,onSave,onClose}){
   const [f,setF]=useState(student||{name:'',phone:'',profId:professors[0]?.id||'',
-    license:'B',numClases:0,bono:'Bono 10',tasasPagadas:false,active:true});
+    license:'B',vehicleType:'manual',numClases:0,bono:'Bono 10',tasasPagadas:false,active:true});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
+  const vt=getVehicleType(f.vehicleType);
   return(
     <Modal title={student?'Editar alumno':'Nuevo alumno'} onClose={onClose}>
       <F label="Nombre completo"><input className={inp} value={f.name} onChange={e=>s('name',e.target.value)}/></F>
@@ -364,6 +391,25 @@ function StudentModal({student,professors,onSave,onClose}){
         <select className={inp} value={f.profId} onChange={e=>s('profId',e.target.value)}>
           {professors.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+      </F>
+      {/* Tipo de vehículo */}
+      <F label="Tipo de vehículo (afecta duración de clase)">
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+          {VEHICLE_TYPES.map(vt2=>(
+            <button key={vt2.id} type="button" onClick={()=>s('vehicleType',vt2.id)}
+              style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,
+                border:'2px solid',cursor:'pointer',fontSize:13,fontWeight:600,transition:'all .15s',
+                borderColor:f.vehicleType===vt2.id?vt2.color:'#e2e8f0',
+                background:f.vehicleType===vt2.id?vt2.color+'15':'#fff',
+                color:f.vehicleType===vt2.id?vt2.color:'#64748b'}}>
+              <Icon name={vt2.icon} size={16}/>{vt2.label}
+              {vt2.id==='automatico'&&<span style={{marginLeft:'auto',fontSize:10,background:'#7c2d8c',color:'#fff',padding:'1px 5px',borderRadius:3,fontWeight:700}}>A</span>}
+            </button>
+          ))}
+        </div>
+        <p style={{fontSize:11,color:'#94a3b8',marginTop:6}}>
+          45 min si el profesor no cambia de vehículo · 60 min si cambia de tipo
+        </p>
       </F>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <F label="Carnet">
@@ -489,8 +535,20 @@ function Alumnos({students,setStudents,professors,user}){
                     <div style={{display:'flex',alignItems:'center',gap:9}}>
                       <Avatar name={stu.name} color={prof?.color||'#64748b'} size={28}/>
                       <div>
-                        <span style={{fontWeight:600,color:'#091426'}}>{stu.name}</span>
-                        {!stu.active&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:6}}>(inactivo)</span>}
+                        <div style={{display:'flex',alignItems:'center',gap:6}}>
+                          <span style={{fontWeight:600,color:'#091426'}}>{stu.name}</span>
+                          {stu.vehicleType==='automatico'&&(
+                            <span title="Vehículo automático" style={{fontSize:10,fontWeight:800,
+                              background:'#7c2d8c',color:'#fff',padding:'1px 5px',borderRadius:3}}>A</span>
+                          )}
+                          {stu.vehicleType==='moto'&&(
+                            <span title="Moto" style={{fontSize:11}}><Icon name="two_wheeler" size={13} style={{color:'#0e6856'}}/></span>
+                          )}
+                          {stu.vehicleType==='camion'&&(
+                            <span title="Camión" style={{fontSize:11}}><Icon name="local_shipping" size={13} style={{color:'#b45309'}}/></span>
+                          )}
+                        </div>
+                        {!stu.active&&<span style={{fontSize:10,color:'#94a3b8'}}>(inactivo)</span>}
                       </div>
                     </div>
                   </td>
@@ -576,67 +634,152 @@ function Alumnos({students,setStudents,professors,user}){
 }
 
 // ─── PROFESORES ───────────────────────────────────────────────────────────────
+const PROF_COLORS=['#1e3a5f','#7c2d8c','#0e6856','#b45309','#9f1239','#1d4ed8','#065f46','#7c3aed'];
+function ProfModal({prof,onSave,onClose}){
+  const blank={name:'',color:PROF_COLORS[0],phone:'',email:''};
+  const [f,setF]=useState(prof?{name:prof.name,color:prof.color,phone:prof.phone||'',email:prof.email||''}:blank);
+  const s=(k,v)=>setF(x=>({...x,[k]:v}));
+  return(
+    <Modal title={prof?'Editar profesor':'Nuevo profesor'} onClose={onClose} width={420}>
+      <F label="Nombre completo"><input className={inp} value={f.name} onChange={e=>s('name',e.target.value)} placeholder="Ej: Juan García"/></F>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+        <F label="Teléfono"><input className={inp} value={f.phone} onChange={e=>s('phone',e.target.value)} placeholder="+34 600 000 000"/></F>
+        <F label="Email"><input className={inp} value={f.email} onChange={e=>s('email',e.target.value)} placeholder="prof@autoescuela.com"/></F>
+      </div>
+      <F label="Color identificativo">
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+          {PROF_COLORS.map(c=>(
+            <button key={c} onClick={()=>s('color',c)} type="button"
+              style={{width:32,height:32,borderRadius:'50%',background:c,border:f.color===c?`3px solid #091426`:'3px solid transparent',
+                cursor:'pointer',transition:'all .15s'}}/>
+          ))}
+        </div>
+        <input type="color" value={f.color} onChange={e=>s('color',e.target.value)}
+          style={{width:'100%',height:36,border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',padding:3}}/>
+      </F>
+      {/* Preview */}
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',
+        background:'#f8f9ff',borderRadius:8,marginBottom:8,border:'1px solid #e2e8f0'}}>
+        <Avatar name={f.name||'?'} color={f.color} size={38}/>
+        <div>
+          <div style={{fontWeight:700,color:'#091426'}}>{f.name||'Nombre del profesor'}</div>
+          <div style={{fontSize:12,color:'#64748b'}}>Vista previa</div>
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+        <button onClick={onClose} className={btnG}>Cancelar</button>
+        <button onClick={()=>{if(f.name)onSave(f)}} className={btnO}><Icon name="save" size={17}/>Guardar</button>
+      </div>
+    </Modal>
+  );
+}
+
 function Profesores({professors,setProfessors,students,user}){
   const isAdmin=user.role==='admin';
   const [editing,setEditing]=useState(null);
-  const [form,setForm]=useState({name:'',color:'#1e3a5f'});
+  const [adding,setAdding]=useState(false);
+  const [deleting,setDeleting]=useState(null);
+
   if(!isAdmin)return(
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',flexDirection:'column',gap:8,color:'#94a3b8'}}>
       <Icon name="lock" size={44}/><p>Solo el administrador puede gestionar profesores</p>
     </div>
   );
-  const handleSave=()=>{
-    if(!form.name)return;
-    if(editing) setProfessors(ps=>ps.map(p=>p.id===editing.id?{...p,...form}:p));
-    else setProfessors(ps=>[...ps,{id:`prof_${Date.now()}`,name:form.name,color:form.color,avatar:form.name.slice(0,2).toUpperCase()}]);
-    setEditing(null);
+
+  const handleSave=(f)=>{
+    if(editing) setProfessors(ps=>ps.map(p=>p.id===editing.id?{...p,...f}:p));
+    else setProfessors(ps=>[...ps,{id:`prof_${Date.now()}`,avatar:f.name.slice(0,2).toUpperCase(),...f}]);
+    setEditing(null);setAdding(false);
   };
+  const handleDel=(id)=>{
+    if(students.some(s=>s.profId===id&&s.active)){
+      alert('No puedes eliminar un profesor con alumnos activos. Reasigna los alumnos primero.');
+      return;
+    }
+    setProfessors(ps=>ps.filter(p=>p.id!==id));
+    setDeleting(null);
+  };
+
   return(
     <div style={{padding:24,overflowY:'auto',height:'100%'}}>
-      <SectionTitle>Profesores</SectionTitle>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+        <SectionTitle>Profesores</SectionTitle>
+        <button onClick={()=>setAdding(true)} className={btnO}><Icon name="person_add" size={17}/>Nuevo profesor</button>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:16}}>
         {professors.map(prof=>{
           const ps=students.filter(s=>s.profId===prof.id&&s.active);
           const debt=ps.filter(s=>!s.tasasPagadas).length;
+          const autoCount=ps.filter(s=>s.vehicleType==='automatico').length;
+          const motoCount=ps.filter(s=>s.vehicleType==='moto').length;
           return(
             <Card key={prof.id} style={{padding:20}}>
               <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
                 <Avatar name={prof.name} color={prof.color} size={46}/>
-                <div>
-                  <div style={{fontWeight:700,fontSize:16,color:'#091426'}}>{prof.name}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:16,color:'#091426',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{prof.name}</div>
                   <div style={{fontSize:12,color:'#64748b'}}>{ps.length} alumnos activos</div>
                 </div>
+                <div style={{display:'flex',gap:4'}}>
+                  <button onClick={()=>{setEditing(prof)}}
+                    style={{color:'#94a3b8',padding:4,border:'none',background:'none',cursor:'pointer',borderRadius:6}}
+                    onMouseEnter={e=>e.currentTarget.style.color='#1e3a5f'}
+                    onMouseLeave={e=>e.currentTarget.style.color='#94a3b8'}>
+                    <Icon name="edit" size={16}/>
+                  </button>
+                  <button onClick={()=>setDeleting(prof)}
+                    style={{color:'#94a3b8',padding:4,border:'none',background:'none',cursor:'pointer',borderRadius:6}}
+                    onMouseEnter={e=>e.currentTarget.style.color='#b91c1c'}
+                    onMouseLeave={e=>e.currentTarget.style.color='#94a3b8'}>
+                    <Icon name="delete" size={16}/>
+                  </button>
+                </div>
               </div>
-              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:14}}>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
                 <Chip ok label="Activo"/>
-                {debt>0&&<Badge label={`${debt} tasas pendientes`} color="#b91c1c"/>}
+                {debt>0&&<Badge label={`${debt} tasas pend.`} color="#b91c1c"/>}
+                {autoCount>0&&<span style={{fontSize:10,fontWeight:700,background:'#7c2d8c',color:'#fff',padding:'2px 6px',borderRadius:3}}>{autoCount} Auto</span>}
+                {motoCount>0&&<Badge label={`${motoCount} Moto`} color="#0e6856"/>}
               </div>
-              <div style={{borderTop:'1px solid #f1f5f9',paddingTop:12}}>
-                {['B','A','C'].map(l=>(
-                  <Badge key={l} label={`Carnet ${l}`} color={prof.color} style={{marginRight:4}}/>
-                ))}
+              <div style={{borderTop:'1px solid #f1f5f9',paddingTop:10,display:'flex',gap:6,flexWrap:'wrap'}}>
+                {/* Distribución vehículos */}
+                {[
+                  {k:'manual',l:'Manual',c:'#1e3a5f'},
+                  {k:'automatico',l:'Auto',c:'#7c2d8c'},
+                  {k:'moto',l:'Moto',c:'#0e6856'},
+                  {k:'camion',l:'Camión',c:'#b45309'},
+                ].map(vt=>{
+                  const cnt=ps.filter(s=>s.vehicleType===vt.k).length;
+                  if(!cnt)return null;
+                  return <Badge key={vt.k} label={`${cnt} ${vt.l}`} color={vt.c}/>;
+                })}
+                {ps.length===0&&<span style={{fontSize:12,color:'#cbd5e1'}}>Sin alumnos</span>}
               </div>
-              <button onClick={()=>{setEditing(prof);setForm({name:prof.name,color:prof.color})}}
-                style={{marginTop:12,fontSize:12,color:'#64748b',display:'flex',alignItems:'center',
-                  gap:4,background:'none',border:'none',cursor:'pointer'}}
-                onMouseEnter={e=>e.currentTarget.style.color='#1e3a5f'}
-                onMouseLeave={e=>e.currentTarget.style.color='#64748b'}>
-                <Icon name="edit" size={14}/>Editar datos
-              </button>
+              {prof.phone&&<div style={{fontSize:12,color:'#64748b',marginTop:8,display:'flex',alignItems:'center',gap:4}}>
+                <Icon name="phone" size={13}/>{prof.phone}
+              </div>}
             </Card>
           );
         })}
+        {/* Tarjeta añadir */}
+        <button onClick={()=>setAdding(true)}
+          style={{border:'2px dashed #e2e8f0',borderRadius:12,padding:20,cursor:'pointer',background:'transparent',
+            display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,
+            color:'#94a3b8',transition:'all .15s',minHeight:160}}
+          onMouseEnter={e=>{e.currentTarget.style.borderColor='#fd761a';e.currentTarget.style.color='#fd761a'}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor='#e2e8f0';e.currentTarget.style.color='#94a3b8'}}>
+          <Icon name="person_add" size={28}/>
+          <span style={{fontSize:13,fontWeight:600}}>Añadir profesor</span>
+        </button>
       </div>
-      {editing&&(
-        <Modal title="Editar profesor" onClose={()=>setEditing(null)} width={380}>
-          <F label="Nombre"><input className={inp} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></F>
-          <F label="Color identificativo">
-            <input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))}
-              style={{width:'100%',height:42,border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',padding:3}}/>
-          </F>
-          <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
-            <button onClick={()=>setEditing(null)} className={btnG}>Cancelar</button>
-            <button onClick={handleSave} className={btnO}><Icon name="save" size={17}/>Guardar</button>
+
+      {(adding||editing)&&<ProfModal prof={editing} onSave={handleSave} onClose={()=>{setAdding(false);setEditing(null)}}/>}
+      {deleting&&(
+        <Modal title="Eliminar profesor" onClose={()=>setDeleting(null)} width={380}>
+          <p style={{color:'#475569',marginBottom:20}}>¿Eliminar a <strong>{deleting.name}</strong>?</p>
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+            <button onClick={()=>setDeleting(null)} className={btnG}>Cancelar</button>
+            <button onClick={()=>handleDel(deleting.id)} className={btnR}><Icon name="delete" size={17}/>Eliminar</button>
           </div>
         </Modal>
       )}
@@ -901,13 +1044,23 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
                             {cs.map(slot=>{
                               const stu=students.find(s=>s.id===slot.studentId);
                               const isPrac=slot.slotType!=='examen';
+                              const isAuto=stu?.vehicleType==='automatico';
+                              const isMoto=stu?.vehicleType==='moto';
+                              const dur=slot.duration||(stu?calcDuration(slot.profId,slot.date,slot.time,stu.vehicleType,slots):45);
                               return(
                                 <div key={slot.id} className="slot-card" onClick={()=>setEditing(slot)}
                                   style={{background:isPrac?'#1e3a8a':'#581c87',
                                     borderLeft:`3px solid ${isPrac?'#93c5fd':'#c084fc'}`}}>
-                                  <div style={{fontSize:10,fontWeight:600,color:'#f1f5f9',
-                                    overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{stu?.name||'?'}</div>
-                                  <div style={{fontSize:9,color:'rgba(255,255,255,.6)'}}>{slot.confirmed?'✓':'…'} {isPrac?'Práct.':'Exam.'}</div>
+                                  <div style={{display:'flex',alignItems:'center',gap:3}}>
+                                    <div style={{fontSize:10,fontWeight:600,color:'#f1f5f9',
+                                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{stu?.name||'?'}</div>
+                                    {isAuto&&<span style={{fontSize:8,fontWeight:800,background:'#a855f7',color:'#fff',padding:'0 3px',borderRadius:2,flexShrink:0}}>A</span>}
+                                    {isMoto&&<Icon name="two_wheeler" size={9} style={{color:'#6ee7b7',flexShrink:0}}/>}
+                                  </div>
+                                  <div style={{fontSize:9,color:'rgba(255,255,255,.6)',display:'flex',justifyContent:'space-between'}}>
+                                    <span>{slot.confirmed?'✓':'…'} {isPrac?'Práct.':'Exam.'}</span>
+                                    <span style={{color:dur===60?'#fcd34d':'rgba(255,255,255,.5)'}}>{dur}′</span>
+                                  </div>
                                 </div>
                               );
                             })}
