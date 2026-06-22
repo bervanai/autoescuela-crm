@@ -404,6 +404,27 @@ function Alumnos({students,setStudents,professors,user}){
   const [editing,setEditing]=useState(null);
   const [adding,setAdding]=useState(false);
   const [deleting,setDeleting]=useState(null);
+  const [sending,setSending]=useState({}); // {studentId: 'sending'|'ok'|'error'}
+
+  const botUrl=load('crm_bot_url','http://localhost:3002');
+
+  const sendBookingMsg=async(stu)=>{
+    setSending(s=>({...s,[stu.id]:'sending'}));
+    try{
+      const r=await fetch(`${botUrl}/api/send-booking/${stu.id}`,{method:'POST',signal:AbortSignal.timeout(5000)});
+      const d=await r.json();
+      if(d.ok){
+        setSending(s=>({...s,[stu.id]:'ok'}));
+        setTimeout(()=>setSending(s=>({...s,[stu.id]:null})),3000);
+      } else {
+        throw new Error(d.error||'Error');
+      }
+    }catch(e){
+      setSending(s=>({...s,[stu.id]:'error'}));
+      setTimeout(()=>setSending(s=>({...s,[stu.id]:null})),3000);
+      alert(`Error enviando mensaje a ${stu.name}: ${e.message}`);
+    }
+  };
 
   const [showInactive,setShowInactive]=useState(false);
   const list=students.filter(s=>{
@@ -500,8 +521,26 @@ function Alumnos({students,setStudents,professors,user}){
                     )}
                   </td>
                   <td style={{padding:'10px 16px'}}>
-                    {isAdmin&&(
-                      <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
+                    <div style={{display:'flex',gap:4,justifyContent:'flex-end',alignItems:'center'}}>
+                      {/* Botón enviar mensaje WhatsApp */}
+                      {stu.active&&stu.botActive!==false&&stu.phone&&(()=>{
+                        const st=sending[stu.id];
+                        return(
+                          <button onClick={()=>sendBookingMsg(stu)}
+                            disabled={st==='sending'}
+                            title="Enviar mensaje de reserva por WhatsApp"
+                            style={{display:'flex',alignItems:'center',gap:4,padding:'4px 8px',
+                              borderRadius:6,border:'1px solid',cursor:st==='sending'?'wait':'pointer',
+                              fontSize:11,fontWeight:600,transition:'all .2s',
+                              borderColor:st==='ok'?'#16a34a':st==='error'?'#dc2626':'#25d366',
+                              background:st==='ok'?'#dcfce7':st==='error'?'#fee2e2':'#f0fdf4',
+                              color:st==='ok'?'#16a34a':st==='error'?'#dc2626':'#16a34a'}}>
+                            <Icon name={st==='ok'?'check_circle':st==='error'?'error':st==='sending'?'hourglass_empty':'send'} size={13}/>
+                            {st==='ok'?'Enviado':st==='error'?'Error':st==='sending'?'...':'Reserva'}
+                          </button>
+                        );
+                      })()}
+                      {isAdmin&&(<>
                         <button onClick={()=>setEditing(stu)} style={{color:'#94a3b8',padding:4,borderRadius:6,border:'none',background:'none',cursor:'pointer'}}
                           onMouseEnter={e=>e.currentTarget.style.color='#1e3a5f'}
                           onMouseLeave={e=>e.currentTarget.style.color='#94a3b8'}>
@@ -512,8 +551,8 @@ function Alumnos({students,setStudents,professors,user}){
                           onMouseLeave={e=>e.currentTarget.style.color='#94a3b8'}>
                           <Icon name="delete" size={16}/>
                         </button>
-                      </div>
-                    )}
+                      </>)}
+                    </div>
                   </td>
                 </tr>
               );
