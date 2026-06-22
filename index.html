@@ -433,6 +433,26 @@ function StudentModal({student,professors,onSave,onClose}){
           </div>
         </F>
       </div>
+      <F label="Fecha de examen DGT">
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <input type="date" className={inp} style={{flex:1}} value={f.examDate||''} onChange={e=>s('examDate',e.target.value)}/>
+          {f.examDate&&(
+            <button type="button" onClick={()=>s('examDate','')}
+              style={{padding:'5px 10px',borderRadius:7,border:'1px solid #e2e8f0',background:'#fff',color:'#94a3b8',cursor:'pointer',fontSize:12}}>
+              Quitar
+            </button>
+          )}
+        </div>
+        {f.examDate&&(()=>{
+          const today=new Date().toISOString().slice(0,10);
+          const passed=f.examDate<today;
+          return(
+            <p style={{fontSize:11,marginTop:5,color:passed?'#b91c1c':'#0e6856',fontWeight:600}}>
+              {passed?`⚠️ Examen el ${f.examDate} — pendiente de resultado`:`✅ Examen programado el ${f.examDate}`}
+            </p>
+          );
+        })()}
+      </F>
       <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
         <button onClick={onClose} className={btnG}>Cancelar</button>
         <button onClick={()=>onSave({...f,id:student?.id||`stu_${Date.now()}`})} className={btnO}>
@@ -518,7 +538,7 @@ function Alumnos({students,setStudents,professors,user}){
         <table style={{width:'100%',fontSize:13,borderCollapse:'collapse'}}>
           <thead>
             <tr style={{background:'#f8fafc'}}>
-              {['Alumno','Teléfono','Profesor','Carnet','Clases','Bono','Tasas','Bot WhatsApp',''].map(h=>(
+              {['Alumno','Teléfono','Profesor','Carnet','Clases','Bono','Tasas','Examen','Bot WhatsApp',''].map(h=>(
                 <th key={h} style={{textAlign:'left',padding:'10px 16px',fontSize:11,
                   fontWeight:600,color:'#64748b',borderBottom:'1px solid #e2e8f0'}}>{h}</th>
               ))}
@@ -527,10 +547,20 @@ function Alumnos({students,setStudents,professors,user}){
           <tbody>
             {list.map(stu=>{
               const prof=professors.find(p=>p.id===stu.profId);
+              const today=new Date().toISOString().slice(0,10);
+              const examPassed=stu.examDate&&stu.examDate<today&&!stu.examResult;
+              const examBg=examPassed?'#fef2f2':stu.examResult==='apto'?'#f0fdf4':stu.examResult==='no_apto'?'#fff7ed':'transparent';
+              const setExamResult=(result)=>{
+                if(result==='apto'){
+                  setStudents(ss=>ss.map(s=>s.id===stu.id?{...s,examResult:'apto',active:false,botActive:false}:s));
+                } else {
+                  setStudents(ss=>ss.map(s=>s.id===stu.id?{...s,examResult:'no_apto'}:s));
+                }
+              };
               return(
-                <tr key={stu.id} style={{borderBottom:'1px solid #f8fafc',opacity:stu.active?1:0.45}}
-                  onMouseEnter={e=>e.currentTarget.style.background='#fafbff'}
-                  onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                <tr key={stu.id} style={{borderBottom:'1px solid #f8fafc',opacity:stu.active?1:0.55,background:examBg,transition:'background .15s'}}
+                  onMouseEnter={e=>{ if(!examPassed)e.currentTarget.style.background=stu.examResult?examBg:'#fafbff'; }}
+                  onMouseLeave={e=>{ e.currentTarget.style.background=examBg; }}>
                   <td style={{padding:'10px 16px'}}>
                     <div style={{display:'flex',alignItems:'center',gap:9}}>
                       <Avatar name={stu.name} color={prof?.color||'#64748b'} size={28}/>
@@ -558,6 +588,57 @@ function Alumnos({students,setStudents,professors,user}){
                   <td style={{padding:'10px 16px',fontWeight:700,color:'#091426'}}>{stu.numClases}</td>
                   <td style={{padding:'10px 16px',color:'#475569'}}>{stu.bono}</td>
                   <td style={{padding:'10px 16px'}}><Chip ok={stu.tasasPagadas} label={stu.tasasPagadas?'Pagadas':'Pendiente'}/></td>
+                  {/* ── Columna Examen ── */}
+                  <td style={{padding:'10px 16px',minWidth:180}}>
+                    {!stu.examDate&&<span style={{color:'#cbd5e1',fontSize:12}}>—</span>}
+                    {stu.examDate&&!examPassed&&!stu.examResult&&(
+                      <div style={{display:'flex',alignItems:'center',gap:5}}>
+                        <Icon name="event" size={14} style={{color:'#3b82f6'}}/>
+                        <span style={{fontSize:12,color:'#1e40af',fontWeight:600}}>
+                          {new Date(stu.examDate+'T12:00:00').toLocaleDateString('es-ES',{day:'numeric',month:'short',year:'numeric'})}
+                        </span>
+                      </div>
+                    )}
+                    {examPassed&&isAdmin&&(
+                      <div>
+                        <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:6}}>
+                          <Icon name="warning" size={13} style={{color:'#b91c1c'}}/>
+                          <span style={{fontSize:11,color:'#b91c1c',fontWeight:700}}>
+                            Examen {new Date(stu.examDate+'T12:00:00').toLocaleDateString('es-ES',{day:'numeric',month:'short'})} — Sin resultado
+                          </span>
+                        </div>
+                        <div style={{display:'flex',gap:5}}>
+                          <button onClick={()=>setExamResult('apto')}
+                            style={{padding:'3px 10px',borderRadius:6,border:'none',cursor:'pointer',
+                              fontSize:11,fontWeight:700,background:'#dcfce7',color:'#166534'}}>
+                            ✅ APTO
+                          </button>
+                          <button onClick={()=>setExamResult('no_apto')}
+                            style={{padding:'3px 10px',borderRadius:6,border:'none',cursor:'pointer',
+                              fontSize:11,fontWeight:700,background:'#fee2e2',color:'#991b1b'}}>
+                            ❌ NO APTO
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {stu.examResult==='apto'&&(
+                      <div style={{display:'flex',alignItems:'center',gap:5}}>
+                        <span style={{padding:'3px 9px',borderRadius:20,background:'#dcfce7',color:'#166534',fontSize:11,fontWeight:700}}>✅ APTO</span>
+                        <span style={{fontSize:10,color:'#94a3b8'}}>{stu.examDate&&new Date(stu.examDate+'T12:00:00').toLocaleDateString('es-ES',{day:'numeric',month:'short'})}</span>
+                      </div>
+                    )}
+                    {stu.examResult==='no_apto'&&(
+                      <div>
+                        <span style={{padding:'3px 9px',borderRadius:20,background:'#fee2e2',color:'#991b1b',fontSize:11,fontWeight:700}}>❌ NO APTO</span>
+                        {isAdmin&&(
+                          <button onClick={()=>setStudents(ss=>ss.map(s=>s.id===stu.id?{...s,examResult:null}:s))}
+                            style={{display:'block',marginTop:4,fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline'}}>
+                            Restablecer
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
                   <td style={{padding:'10px 16px'}}>
                     {/* Toggle Bot WhatsApp */}
                     {isAdmin&&(
@@ -615,7 +696,7 @@ function Alumnos({students,setStudents,professors,user}){
                 </tr>
               );
             })}
-            {list.length===0&&<tr><td colSpan={8} style={{padding:32,textAlign:'center',color:'#94a3b8'}}>No hay alumnos</td></tr>}
+            {list.length===0&&<tr><td colSpan={9} style={{padding:32,textAlign:'center',color:'#94a3b8'}}>No hay alumnos</td></tr>}
           </tbody>
         </table>
       </Card>
@@ -720,7 +801,7 @@ function Profesores({professors,setProfessors,students,user}){
                   <div style={{fontWeight:700,fontSize:16,color:'#091426',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{prof.name}</div>
                   <div style={{fontSize:12,color:'#64748b'}}>{ps.length} alumnos activos</div>
                 </div>
-                <div style={{display:'flex',gap:4'}}>
+                <div style={{display:'flex',gap:4}}>
                   <button onClick={()=>{setEditing(prof)}}
                     style={{color:'#94a3b8',padding:4,border:'none',background:'none',cursor:'pointer',borderRadius:6}}
                     onMouseEnter={e=>e.currentTarget.style.color='#1e3a5f'}
@@ -948,6 +1029,72 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const saveSlot=f=>{const k=`${f.date}_${f.time}_${f.profId}`;setSlots(ss=>({...ss,[k]:{...f,id:k}}));setAdding(null);setEditing(null);};
   const delSlot=id=>{setSlots(ss=>{const n={...ss};delete n[id];return n;});setEditing(null);};
 
+  const exportSchedule=()=>{
+    const profsToExport=vProf==='all'?professors:professors.filter(p=>p.id===vProf);
+    const weekLabel=`${week[0].toLocaleDateString('es-ES',{day:'numeric',month:'short'})} – ${week[5].toLocaleDateString('es-ES',{day:'numeric',month:'short',year:'numeric'})}`;
+    const DAY_FULL=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+
+    const tables=profsToExport.map(prof=>{
+      const rows=TIME_SLOTS.map(time=>{
+        const cells=week.map((d,di)=>{
+          const ds=d.toISOString().slice(0,10);
+          const isExam=examDays.includes(ds);
+          if(isExam) return `<td style="background:#fff7ed;text-align:center;font-size:11px;color:#c2410c;">📝 Examen</td>`;
+          const s=Object.values(slots).filter(sl=>sl.date===ds&&sl.time===time&&sl.profId===prof.id);
+          if(!s.length) return `<td></td>`;
+          return s.map(sl=>{
+            const stu=students.find(x=>x.id===sl.studentId);
+            const label=stu?.name||'?';
+            const vt=stu?.vehicleType||'manual';
+            const badge=vt==='automatico'?'<span style="background:#a855f7;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">A</span>':
+                         vt==='moto'?'<span style="font-size:10px;margin-left:3px">🛵</span>':
+                         vt==='camion'?'<span style="font-size:10px;margin-left:3px">🚛</span>':'';
+            const dur=sl.duration||(stu?calcDuration(sl.profId,sl.date,sl.time,stu.vehicleType,slots):45);
+            return `<div style="background:${sl.slotType==='examen'?'#581c87':'#1e3a8a'};color:#fff;border-radius:4px;padding:3px 6px;margin-bottom:2px;font-size:11px">
+              <b>${label}</b>${badge} <span style="float:right;opacity:.7">${dur}′</span>
+            </div>`;
+          }).join('');
+        });
+        return `<tr><td style="color:#64748b;font-size:11px;white-space:nowrap;padding:3px 8px">${time}</td>${cells.map(c=>`<td style="vertical-align:top;padding:2px;min-width:110px">${c}</td>`).join('')}</tr>`;
+      }).join('');
+
+      return `
+        <div style="page-break-after:always;padding:24px">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #1e3a5f;padding-bottom:10px;margin-bottom:16px">
+            <div>
+              <div style="font-size:20px;font-weight:800;color:#091426">Horario — ${prof.name}</div>
+              <div style="font-size:13px;color:#64748b;margin-top:2px">Semana del ${weekLabel}</div>
+            </div>
+            <div style="font-size:11px;color:#94a3b8">Generado el ${new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-family:system-ui,sans-serif">
+            <thead>
+              <tr style="background:#f8faff">
+                <th style="padding:6px 8px;font-size:11px;color:#94a3b8;width:54px"></th>
+                ${DAY_FULL.map((d,i)=>`<th style="padding:6px 8px;text-align:left;font-size:12px;color:#475569;border-bottom:1px solid #e2e8f0">
+                  ${d}<br><span style="font-size:14px;font-weight:800;color:#091426">${week[i].getDate()}</span>
+                </th>`).join('')}
+              </tr>
+            </thead>
+            <tbody style="border-top:1px solid #e2e8f0">
+              ${rows}
+            </tbody>
+          </table>
+        </div>`;
+    }).join('');
+
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Horario Semanal</title>
+      <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#fff;font-family:system-ui,sans-serif}
+      tr:hover{background:#f8faff}td{border-bottom:1px solid #f1f5f9}
+      @media print{@page{margin:12mm}}</style>
+      </head><body>${tables}
+      <script>window.onload=()=>window.print()<\/script></body></html>`;
+
+    const w=window.open('','_blank');
+    w.document.write(html);
+    w.document.close();
+  };
+
   return(
     <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden'}}>
       {/* toolbar */}
@@ -972,6 +1119,13 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
           <option value="practica">Prácticas</option>
           <option value="examen">Exámenes</option>
         </select>
+        <button onClick={exportSchedule}
+          style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',borderRadius:7,border:'1px solid #e2e8f0',
+            background:'#fff',color:'#475569',fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',transition:'all .15s'}}
+          onMouseEnter={e=>{e.currentTarget.style.background='#f8faff';e.currentTarget.style.borderColor='#94a3b8';}}
+          onMouseLeave={e=>{e.currentTarget.style.background='#fff';e.currentTarget.style.borderColor='#e2e8f0';}}>
+          <Icon name="print" size={16}/>Exportar PDF
+        </button>
       </div>
       {/* leyenda */}
       <div style={{padding:'5px 16px',display:'flex',gap:16,fontSize:11,color:'#94a3b8',
