@@ -12,20 +12,23 @@ Railway       ←──── Bot (bot-server.js) ────→ Supabase
 
 ---
 
-## Paso 1 — Supabase (base de datos)
+## Paso 1 — Supabase (base de datos) ✅ HECHO (6 jul 2026)
 
-1. Crear cuenta en [supabase.com](https://supabase.com) → **New project**
-2. Elegir región: `West EU (Ireland)` o `EU Central (Frankfurt)`
-3. Guardar la contraseña de la base de datos
-4. En el proyecto → **SQL Editor** → pegar y ejecutar `supabase_schema.sql`
-5. En **Settings → API**:
-   - Copiar `Project URL` → será `SUPABASE_URL`
-   - Copiar `anon public` key → para el CRM
-   - Copiar `service_role` key → para el bot (Railway)
-6. Crear la primera escuela en **Table Editor → schools**:
-   - name: "AutoEscuela García" (o el nombre real)
-   - color: "#fd761a"
-   - Copiar el UUID generado → será `SCHOOL_ID`
+El proyecto ya está creado y el esquema ejecutado:
+
+| Dato | Valor |
+|---|---|
+| Proyecto | `autoescuela-crm` (región eu-west-3, París) |
+| `SUPABASE_URL` | `https://vxpavrtjgvrxqimsemku.supabase.co` |
+| Anon key (CRM) | Dashboard → Settings → API → `anon public` |
+| `SCHOOL_ID` | `4a443e53-2cfd-45df-b360-616d7e309687` |
+
+**Solo falta**: copiar la `service_role` key desde
+[Dashboard → Settings → API](https://supabase.com/dashboard/project/vxpavrtjgvrxqimsemku/settings/api)
+y pegarla en `.env` (local) y en Railway como `SUPABASE_SERVICE_KEY`.
+
+> Nota: el esquema usa IDs de tipo TEXT (no UUID) para ser compatible con los
+> IDs que generan el CRM y el bot (`stu_…`, `prof_…`, `slot_…`).
 
 ---
 
