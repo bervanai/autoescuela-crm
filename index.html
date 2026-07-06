@@ -64,6 +64,16 @@ const NAMES_MARIA =['Fernando López','Sandra Muñoz','Pablo García','Lucia Fer
 const load=(k,fb)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb}catch{return fb}};
 const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
+// ─── Config de la autoescuela ─────────────────────────────────────────────────
+const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'http://localhost:3002',setupDone:false};
+const loadSchool=()=>load('crm_school_v1',DEFAULT_SCHOOL);
+const saveSchool=v=>save('crm_school_v1',v);
+
+// ─── Contraseñas (pre-Supabase) ───────────────────────────────────────────────
+const DEFAULT_PASSWORDS={admin:'1234'};
+const loadPasswords=()=>load('crm_passwords_v1',DEFAULT_PASSWORDS);
+const savePasswords=v=>save('crm_passwords_v1',v);
+
 // ─── Seed ─────────────────────────────────────────────────────────────────────
 function rnd(arr){return arr[Math.floor(Math.random()*arr.length)];}
 function seedStudents(){
@@ -168,40 +178,100 @@ const F=({label,children})=>(
 );
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
-function LoginScreen({onLogin}){
+function LoginScreen({onLogin, professors}){
+  const school=loadSchool();
+  const [userId,setUserId]=useState('admin');
+  const [pass,setPass]=useState('');
+  const [error,setError]=useState('');
+  const [showPass,setShowPass]=useState(false);
+
+  // Construir lista de usuarios: admin + profesores activos
+  const userList=[
+    {id:'admin',name:'Administrador',role:'admin',icon:'admin_panel_settings',color:'#fd761a'},
+    ...professors.filter(p=>p.active!==false).map(p=>({
+      id:p.id,name:p.name,role:'profesor',icon:'directions_car',color:p.color||'#1e3a5f'
+    }))
+  ];
+
+  const handleLogin=e=>{
+    e.preventDefault();
+    const u=userList.find(x=>x.id===userId);
+    if(!u){setError('Selecciona un usuario');return;}
+    const passwords=loadPasswords();
+    const correctPwd=passwords[userId]||'1234';
+    if(pass!==correctPwd){setError('Contraseña incorrecta');setPass('');return;}
+    setError('');
+    onLogin(u);
+  };
+
+  const ac=school.color||'#fd761a';
   return(
-    <div style={{minHeight:'100vh',display:'flex',flexDirection:'column',alignItems:'center',
-      justifyContent:'center',padding:24,background:'linear-gradient(145deg,#091426 0%,#0f2a4a 100%)'}}>
-      <div style={{textAlign:'center',marginBottom:36}}>
-        <div style={{display:'inline-flex',alignItems:'center',gap:14,marginBottom:8}}>
-          <div style={{background:'#fd761a',borderRadius:14,padding:12,display:'flex'}}>
-            <Icon name="directions_car" size={36} style={{color:'#fff'}}/>
-          </div>
-          <div style={{textAlign:'left'}}>
-            <div style={{fontSize:28,fontWeight:800,color:'#fff',letterSpacing:'-.5px'}}>AutoEscuela CRM</div>
-            <div style={{fontSize:13,color:'rgba(255,255,255,.5)',marginTop:2}}>Selecciona tu usuario para continuar</div>
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+      padding:24,background:'linear-gradient(145deg,#091426 0%,#0f2a4a 100%)'}}>
+      <div style={{width:'100%',maxWidth:400}}>
+        {/* Logo */}
+        <div style={{textAlign:'center',marginBottom:36}}>
+          <div style={{display:'inline-flex',alignItems:'center',gap:14,marginBottom:10}}>
+            <div style={{background:ac,borderRadius:16,padding:14,display:'flex',
+              boxShadow:`0 8px 32px ${ac}55`}}>
+              <Icon name="directions_car" size={32} style={{color:'#fff'}}/>
+            </div>
+            <div style={{textAlign:'left'}}>
+              <div style={{fontSize:26,fontWeight:800,color:'#fff',letterSpacing:'-.5px'}}>{school.name}</div>
+              <div style={{fontSize:12,color:'rgba(255,255,255,.45)',marginTop:3}}>Panel de gestión</div>
+            </div>
           </div>
         </div>
-      </div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,width:'100%',maxWidth:440}}>
-        {USERS.map(u=>(
-          <button key={u.id} onClick={()=>onLogin(u)}
-            style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12,padding:'24px 16px',
-              borderRadius:14,border:'2px solid rgba(255,255,255,.1)',background:'rgba(255,255,255,.06)',
-              cursor:'pointer',transition:'all .18s'}}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor=u.color;e.currentTarget.style.background='rgba(255,255,255,.1)';e.currentTarget.style.transform='translateY(-2px)'}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(255,255,255,.1)';e.currentTarget.style.background='rgba(255,255,255,.06)';e.currentTarget.style.transform='none'}}
-          >
-            <div style={{background:u.color+'30',borderRadius:'50%',width:60,height:60,
-              display:'flex',alignItems:'center',justifyContent:'center'}}>
-              <Icon name={u.icon} size={30} style={{color:u.color}}/>
+
+        {/* Form */}
+        <form onSubmit={handleLogin}
+          style={{background:'rgba(255,255,255,.06)',border:'1px solid rgba(255,255,255,.1)',
+            borderRadius:18,padding:32,backdropFilter:'blur(12px)'}}>
+          <div style={{marginBottom:20}}>
+            <label style={{display:'block',fontSize:11,fontWeight:600,color:'rgba(255,255,255,.5)',
+              marginBottom:8,letterSpacing:'.5px',textTransform:'uppercase'}}>Usuario</label>
+            <select value={userId} onChange={e=>setUserId(e.target.value)}
+              style={{width:'100%',padding:'12px 14px',borderRadius:10,border:'1px solid rgba(255,255,255,.15)',
+                background:'rgba(255,255,255,.08)',color:'#fff',fontSize:14,outline:'none',cursor:'pointer'}}>
+              {userList.map(u=>(
+                <option key={u.id} value={u.id} style={{background:'#0f2a4a',color:'#fff'}}>
+                  {u.name} — {u.role==='admin'?'Administrador':'Profesor'}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{marginBottom:24}}>
+            <label style={{display:'block',fontSize:11,fontWeight:600,color:'rgba(255,255,255,.5)',
+              marginBottom:8,letterSpacing:'.5px',textTransform:'uppercase'}}>Contraseña</label>
+            <div style={{position:'relative'}}>
+              <input type={showPass?'text':'password'} value={pass} onChange={e=>setPass(e.target.value)}
+                placeholder="Introduce tu contraseña" autoComplete="current-password"
+                style={{width:'100%',padding:'12px 42px 12px 14px',borderRadius:10,
+                  border:`1px solid ${error?'#f87171':'rgba(255,255,255,.15)'}`,
+                  background:'rgba(255,255,255,.08)',color:'#fff',fontSize:14,outline:'none'}}/>
+              <button type="button" onClick={()=>setShowPass(v=>!v)}
+                style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',
+                  background:'none',border:'none',color:'rgba(255,255,255,.4)',cursor:'pointer',padding:0}}>
+                <Icon name={showPass?'visibility_off':'visibility'} size={18}/>
+              </button>
             </div>
-            <div style={{textAlign:'center'}}>
-              <div style={{fontWeight:700,color:'#fff',fontSize:15}}>{u.name}</div>
-              <div style={{fontSize:12,color:u.color,marginTop:2}}>{u.role==='admin'?'Administrador':'Profesor'}</div>
-            </div>
+            {error&&<p style={{color:'#f87171',fontSize:12,marginTop:6}}>{error}</p>}
+          </div>
+
+          <button type="submit"
+            style={{width:'100%',padding:'13px',borderRadius:10,border:'none',cursor:'pointer',
+              background:ac,color:'#fff',fontSize:15,fontWeight:700,
+              boxShadow:`0 4px 20px ${ac}55`,transition:'opacity .15s'}}
+            onMouseEnter={e=>e.currentTarget.style.opacity='.88'}
+            onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
+            Acceder
           </button>
-        ))}
+
+          <p style={{textAlign:'center',fontSize:11,color:'rgba(255,255,255,.25)',marginTop:20}}>
+            ¿Olvidaste la contraseña? Contacta con el administrador.
+          </p>
+        </form>
       </div>
     </div>
   );
@@ -217,6 +287,7 @@ const NAV_ADMIN=[
   {id:'vehiculos',      icon:'directions_car', label:'Vehículos'},
   {id:'mensajes',       icon:'chat',           label:'Mensajes WhatsApp'},
   {id:'estadisticas',   icon:'bar_chart',      label:'Estadísticas'},
+  {id:'configuracion',  icon:'settings',       label:'Configuración'},
 ];
 const NAV_PROF=[
   {id:'horario',        icon:'calendar_month', label:'Mi Horario'},
@@ -224,18 +295,21 @@ const NAV_PROF=[
   {id:'alumnos',        icon:'school',         label:'Mis Alumnos'},
   {id:'estadisticas',   icon:'bar_chart',      label:'Estadísticas'},
 ];
-function Sidebar({page,setPage,user,onLogout}){
+function Sidebar({page,setPage,user,onLogout,professors,schoolConfig}){
   const nav=user.role==='admin'?NAV_ADMIN:NAV_PROF;
-  const prof=PROFESSORS.find(p=>p.id===user.id);
+  const prof=professors.find(p=>p.id===user.id);
+  const ac=schoolConfig?.color||'#fd761a';
   return(
     <div style={{width:210,background:'#091426',display:'flex',flexDirection:'column',
       flex:1,flexShrink:0,borderRight:'1px solid rgba(255,255,255,.07)'}}>
       <div style={{padding:'16px 14px',borderBottom:'1px solid rgba(255,255,255,.07)',
         display:'flex',alignItems:'center',gap:10}}>
-        <div style={{background:'#fd761a',borderRadius:8,padding:7,display:'flex'}}>
+        <div style={{background:ac,borderRadius:8,padding:7,display:'flex'}}>
           <Icon name="directions_car" size={18} style={{color:'#fff'}}/>
         </div>
-        <span style={{fontWeight:700,fontSize:14,color:'#fff'}}>AutoEscuela</span>
+        <span style={{fontWeight:700,fontSize:13,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {schoolConfig?.name||'AutoEscuela'}
+        </span>
       </div>
       <nav style={{flex:1,padding:'10px 8px',overflowY:'auto'}}>
         {nav.map(n=>{
@@ -1876,6 +1950,138 @@ function Disponibilidad({user,professors,slots,setSlots}){
 
 // ─── BOT SYNC ─────────────────────────────────────────────────────────────────
 // Convierte slot del bot (array item) a formato CRM (object key)
+// ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
+function Configuracion({professors,students,setStudents,setSlots,setExamDays,schoolConfig,setSchoolConfig}){
+  const [school,setSchool]=useState({...schoolConfig});
+  const [passwords,setPasswords]=useState(loadPasswords());
+  const [saved,setSaved]=useState(false);
+  const [confirmReset,setConfirmReset]=useState(false);
+
+  const userList=[
+    {id:'admin',name:'Administrador'},
+    ...professors.filter(p=>p.active!==false).map(p=>({id:p.id,name:p.name}))
+  ];
+
+  const handleSaveSchool=()=>{
+    saveSchool(school);
+    setSchoolConfig(school);
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
+
+  const handlePassChange=(userId,val)=>{
+    const next={...passwords,[userId]:val};
+    setPasswords(next);
+    savePasswords(next);
+  };
+
+  const handleResetDemo=()=>{
+    // Borrar todos los datos y recargar con datos limpios
+    ['crm_students_v3','crm_slots_v4','crm_exam_days_v3','crm_passwords_v1'].forEach(k=>localStorage.removeItem(k));
+    setStudents([]);
+    setSlots({});
+    setExamDays([]);
+    setPasswords(DEFAULT_PASSWORDS);
+    setConfirmReset(false);
+    alert('Datos limpiados. Ahora puedes añadir los alumnos y profesores reales.');
+  };
+
+  const COLORS=['#fd761a','#1e3a5f','#7c2d8c','#0e6856','#b45309','#b91c1c','#0369a1','#374151'];
+
+  return(
+    <div style={{padding:24,overflowY:'auto',height:'100%',maxWidth:700}}>
+      <SectionTitle>Configuración</SectionTitle>
+
+      {/* ── Datos de la autoescuela ── */}
+      <Card style={{padding:24,marginBottom:20}}>
+        <div style={{fontWeight:700,fontSize:15,color:'#091426',marginBottom:18,display:'flex',alignItems:'center',gap:8}}>
+          <Icon name="business" size={18} style={{color:'#fd761a'}}/>Datos de la autoescuela
+        </div>
+        <F label="Nombre de la autoescuela">
+          <input className={inp} value={school.name||''} onChange={e=>setSchool(s=>({...s,name:e.target.value}))}
+            placeholder="AutoEscuela García"/>
+        </F>
+        <F label="URL del bot WhatsApp">
+          <input className={inp} value={school.botUrl||'http://localhost:3002'}
+            onChange={e=>setSchool(s=>({...s,botUrl:e.target.value}))}
+            placeholder="http://localhost:3002 o https://tu-bot.railway.app"/>
+        </F>
+        <F label="Color principal">
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+            {COLORS.map(c=>(
+              <button key={c} type="button" onClick={()=>setSchool(s=>({...s,color:c}))}
+                style={{width:32,height:32,borderRadius:8,background:c,border:school.color===c?'3px solid #091426':'2px solid transparent',
+                  cursor:'pointer',transition:'transform .1s'}}
+                onMouseEnter={e=>e.currentTarget.style.transform='scale(1.15)'}
+                onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}/>
+            ))}
+            <input type="color" value={school.color||'#fd761a'} onChange={e=>setSchool(s=>({...s,color:e.target.value}))}
+              style={{width:32,height:32,borderRadius:8,border:'1px solid #e2e8f0',cursor:'pointer',padding:2}}/>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginTop:6}}>
+            <div style={{background:school.color||'#fd761a',borderRadius:8,padding:8,display:'flex'}}>
+              <Icon name="directions_car" size={18} style={{color:'#fff'}}/>
+            </div>
+            <span style={{fontSize:13,fontWeight:700,color:school.color||'#fd761a'}}>{school.name||'AutoEscuela'}</span>
+            <span style={{fontSize:11,color:'#94a3b8'}}>← previsualización sidebar</span>
+          </div>
+        </F>
+        <button onClick={handleSaveSchool} className={btnO} style={{marginTop:8}}>
+          <Icon name={saved?'check_circle':'save'} size={17}/>
+          {saved?'¡Guardado!':'Guardar configuración'}
+        </button>
+      </Card>
+
+      {/* ── Contraseñas ── */}
+      <Card style={{padding:24,marginBottom:20}}>
+        <div style={{fontWeight:700,fontSize:15,color:'#091426',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+          <Icon name="lock" size={18} style={{color:'#1e3a5f'}}/>Contraseñas de acceso
+        </div>
+        <p style={{fontSize:12,color:'#94a3b8',marginBottom:18}}>
+          Los cambios se guardan al instante. Contraseña por defecto: <strong>1234</strong>
+        </p>
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {userList.map(u=>(
+            <div key={u.id} style={{display:'flex',alignItems:'center',gap:12}}>
+              <div style={{width:130,fontSize:13,fontWeight:600,color:'#475569',flexShrink:0}}>
+                {u.name}
+              </div>
+              <input type="text" className={inp} style={{maxWidth:200}}
+                value={passwords[u.id]||''}
+                onChange={e=>handlePassChange(u.id,e.target.value)}
+                placeholder="Nueva contraseña"/>
+              <span style={{fontSize:11,color:'#94a3b8'}}>
+                {passwords[u.id]?`${passwords[u.id].length} caracteres`:'Sin contraseña (usa 1234)'}
+              </span>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* ── Zona de peligro ── */}
+      <Card style={{padding:24,border:'1px solid #fca5a5'}}>
+        <div style={{fontWeight:700,fontSize:15,color:'#b91c1c',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+          <Icon name="warning" size={18} style={{color:'#b91c1c'}}/>Zona de peligro
+        </div>
+        <p style={{fontSize:13,color:'#475569',marginBottom:16}}>
+          Elimina todos los datos de demo (alumnos, clases, exámenes) y deja el sistema limpio para introducir datos reales. Esta acción no se puede deshacer.
+        </p>
+        {!confirmReset?(
+          <button onClick={()=>setConfirmReset(true)} className={btnR}>
+            <Icon name="delete_sweep" size={17}/>Limpiar datos de demo
+          </button>
+        ):(
+          <div style={{display:'flex',gap:10,alignItems:'center'}}>
+            <span style={{fontSize:13,color:'#b91c1c',fontWeight:600}}>¿Seguro? Esto borrará TODO.</span>
+            <button onClick={handleResetDemo} className={btnR}><Icon name="delete_forever" size={17}/>Sí, limpiar</button>
+            <button onClick={()=>setConfirmReset(false)} className={btnG}>Cancelar</button>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function botSlotToCRM(s){
   return {
     id:        s.id,
@@ -1919,8 +2125,9 @@ function App(){
     const st=load('crm_students_v3',null)||seedStudents();return seedSlots(st);
   });
   const [examDays,setExamDays]=useState(()=>load('crm_exam_days_v3',[]));
-  const [botUrl,setBotUrl]=useState(()=>load('crm_bot_url','http://localhost:3002'));
-  const [botStatus,setBotStatus]=useState('unknown'); // 'ok'|'error'|'unknown'
+  const [schoolConfig,setSchoolConfig]=useState(()=>loadSchool());
+  const [botUrl,setBotUrl]=useState(()=>schoolConfig.botUrl||load('crm_bot_url','http://localhost:3002'));
+  const [botStatus,setBotStatus]=useState('unknown');
   const [lastSync,setLastSync]=useState(null);
 
   useEffect(()=>save('crm_professors_v3',professors),[professors]);
@@ -2007,7 +2214,7 @@ function App(){
   const login=u=>{setUser(u);sessionStorage.setItem('crm_u',JSON.stringify(u));setPage(u.role==='admin'?'dashboard':'horario');};
   const logout=()=>{setUser(null);sessionStorage.removeItem('crm_u');};
 
-  if(!user)return <LoginScreen onLogin={login}/>;
+  if(!user)return <LoginScreen onLogin={login} professors={professors}/>;
 
   const shared={students,professors,user};
   const pages={
@@ -2019,6 +2226,9 @@ function App(){
     vehiculos:      <Vehiculos user={user} vehicles={vehicles} setVehicles={setVehicles}/>,
     mensajes:       <Mensajes {...shared} slots={slots}/>,
     estadisticas:   <Estadisticas {...shared} slots={slots}/>,
+    configuracion:  <Configuracion professors={professors} students={students} setStudents={setStudents}
+                      setSlots={setSlots} setExamDays={setExamDays}
+                      schoolConfig={schoolConfig} setSchoolConfig={setSchoolConfig}/>,
   };
 
   // Indicador de estado del bot en el sidebar
@@ -2055,19 +2265,11 @@ function App(){
   return(
     <div style={{display:'flex',height:'100vh',overflow:'hidden',background:'#f8f9ff'}}>
       <div style={{display:'flex',flexDirection:'column',height:'100vh'}}>
-        <Sidebar page={page} setPage={setPage} user={user} onLogout={logout}/>
+        <Sidebar page={page} setPage={setPage} user={user} onLogout={logout} professors={professors} schoolConfig={schoolConfig}/>
         {botIndicator}
       </div>
       <main style={{flex:1,overflow:'hidden',position:'relative'}}>
         {pages[page]||pages.dashboard}
-        {user.role==='admin'&&(
-          <button onClick={()=>{if(confirm('¿Reiniciar todos los datos de demo?'))freshDemo();}}
-            style={{position:'absolute',bottom:16,right:16,fontSize:11,color:'#94a3b8',
-              background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,
-              padding:'5px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
-            <Icon name="refresh" size={13}/>Reiniciar demo
-          </button>
-        )}
       </main>
     </div>
   );
