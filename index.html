@@ -206,10 +206,31 @@ function LoginScreen({onLogin, professors}){
     }))
   ];
 
-  const handleLogin=e=>{
+  const [checking,setChecking]=useState(false);
+  const handleLogin=async e=>{
     e.preventDefault();
     const u=userList.find(x=>x.id===userId);
     if(!u){setError('Selecciona un usuario');return;}
+    const sb=getSupabase();
+    if(sb){
+      // Login contra Supabase (contraseñas hasheadas en la nube)
+      setError('');setChecking(true);
+      try{
+        const {data,error:err}=await sb.rpc('verify_login',{p_user_id:userId,p_password:pass});
+        if(err)throw err;
+        if(data&&data.length){
+          onLogin(u);
+        } else {
+          setError('Contraseña incorrecta');setPass('');
+        }
+      }catch(e2){
+        setError('Error de conexión: '+(e2.message||'Supabase no responde'));
+      }finally{
+        setChecking(false);
+      }
+      return;
+    }
+    // Sin Supabase: contraseñas locales (modo demo)
     const passwords=loadPasswords();
     const correctPwd=passwords[userId]||'1234';
     if(pass!==correctPwd){setError('Contraseña incorrecta');setPass('');return;}
@@ -272,13 +293,14 @@ function LoginScreen({onLogin, professors}){
             {error&&<p style={{color:'#f87171',fontSize:12,marginTop:6}}>{error}</p>}
           </div>
 
-          <button type="submit"
-            style={{width:'100%',padding:'13px',borderRadius:10,border:'none',cursor:'pointer',
-              background:ac,color:'#fff',fontSize:15,fontWeight:700,
+          <button type="submit" disabled={checking}
+            style={{width:'100%',padding:'13px',borderRadius:10,border:'none',
+              cursor:checking?'wait':'pointer',
+              background:ac,color:'#fff',fontSize:15,fontWeight:700,opacity:checking?.7:1,
               boxShadow:`0 4px 20px ${ac}55`,transition:'opacity .15s'}}
-            onMouseEnter={e=>e.currentTarget.style.opacity='.88'}
-            onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
-            Acceder
+            onMouseEnter={e=>{if(!checking)e.currentTarget.style.opacity='.88'}}
+            onMouseLeave={e=>{if(!checking)e.currentTarget.style.opacity='1'}}>
+            {checking?'Comprobando...':'Acceder'}
           </button>
 
           <p style={{textAlign:'center',fontSize:11,color:'rgba(255,255,255,.25)',marginTop:20}}>
@@ -2035,6 +2057,41 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
     savePasswords(next);
   };
 
+  // ── Contraseñas en Supabase ──
+  const supaActive=!!getSupabase();
+  const [adminPwd,setAdminPwd]=useState('');
+  const [newPwds,setNewPwds]=useState({});
+  const [pwdMsg,setPwdMsg]=useState('');
+  const [savingPwd,setSavingPwd]=useState(null);
+  const handleSavePwdSupa=async(u)=>{
+    const np=(newPwds[u.id]||'').trim();
+    if(!np){setPwdMsg('Escribe primero la contraseña nueva');return;}
+    if(!adminPwd){setPwdMsg('Introduce tu contraseña de administrador (arriba)');return;}
+    const sb=getSupabase();
+    setSavingPwd(u.id);setPwdMsg('');
+    try{
+      const {data,error}=await sb.rpc('admin_set_password',{
+        p_admin_id:'admin',
+        p_admin_password:adminPwd,
+        p_target_user:u.id,
+        p_new_password:np,
+        p_target_name:u.name,
+        p_target_role:u.id==='admin'?'admin':'professor',
+      });
+      if(error)throw error;
+      if(data===true){
+        setPwdMsg(`✅ Contraseña de ${u.name} actualizada en Supabase`);
+        setNewPwds(s=>({...s,[u.id]:''}));
+      } else {
+        setPwdMsg('❌ Contraseña de administrador incorrecta');
+      }
+    }catch(e){
+      setPwdMsg('❌ Error: '+(e.message||'desconocido'));
+    }finally{
+      setSavingPwd(null);
+    }
+  };
+
   const handleResetDemo=()=>{
     ['crm_students_v3','crm_slots_v4','crm_exam_days_v3','crm_passwords_v1','crm_avail_v1','crm_blocked_v1'].forEach(k=>localStorage.removeItem(k));
     setStudents([]);
@@ -2139,26 +2196,68 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
       <Card style={{padding:24,marginBottom:20}}>
         <div style={{fontWeight:700,fontSize:15,color:'#091426',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
           <Icon name="lock" size={18} style={{color:'#1e3a5f'}}/>Contraseñas de acceso
+          {supaActive&&<span style={{fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534',
+            padding:'2px 8px',borderRadius:10}}>☁️ En Supabase</span>}
         </div>
-        <p style={{fontSize:12,color:'#94a3b8',marginBottom:18}}>
-          Los cambios se guardan al instante. Contraseña por defecto: <strong>1234</strong>
-        </p>
-        <div style={{display:'flex',flexDirection:'column',gap:12}}>
-          {userList.map(u=>(
-            <div key={u.id} style={{display:'flex',alignItems:'center',gap:12}}>
-              <div style={{width:130,fontSize:13,fontWeight:600,color:'#475569',flexShrink:0}}>
-                {u.name}
-              </div>
-              <input type="text" className={inp} style={{maxWidth:200}}
-                value={passwords[u.id]||''}
-                onChange={e=>handlePassChange(u.id,e.target.value)}
-                placeholder="Nueva contraseña"/>
-              <span style={{fontSize:11,color:'#94a3b8'}}>
-                {passwords[u.id]?`${passwords[u.id].length} caracteres`:'Sin contraseña (usa 1234)'}
-              </span>
+        {supaActive?(
+          <>
+            <p style={{fontSize:12,color:'#94a3b8',marginBottom:14}}>
+              Las contraseñas se guardan cifradas en Supabase. Para cambiarlas, introduce
+              tu contraseña de administrador actual y la nueva de cada usuario.
+            </p>
+            <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16,
+              padding:'10px 14px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+              <Icon name="key" size={16} style={{color:'#b45309'}}/>
+              <span style={{fontSize:12,fontWeight:600,color:'#92400e',flexShrink:0}}>Tu contraseña de admin:</span>
+              <input type="password" className={inp} style={{maxWidth:180}}
+                value={adminPwd} onChange={e=>setAdminPwd(e.target.value)}
+                placeholder="Contraseña actual"/>
             </div>
-          ))}
-        </div>
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              {userList.map(u=>(
+                <div key={u.id} style={{display:'flex',alignItems:'center',gap:12}}>
+                  <div style={{width:130,fontSize:13,fontWeight:600,color:'#475569',flexShrink:0}}>
+                    {u.name}
+                  </div>
+                  <input type="text" className={inp} style={{maxWidth:200}}
+                    value={newPwds[u.id]||''}
+                    onChange={e=>setNewPwds(s=>({...s,[u.id]:e.target.value}))}
+                    placeholder="Nueva contraseña"/>
+                  <button onClick={()=>handleSavePwdSupa(u)} className={btnG}
+                    disabled={savingPwd===u.id} style={{opacity:savingPwd===u.id?.6:1}}>
+                    <Icon name="save" size={14}/>
+                    {savingPwd===u.id?'Guardando...':'Guardar'}
+                  </button>
+                </div>
+              ))}
+            </div>
+            {pwdMsg&&<p style={{fontSize:12,marginTop:12,fontWeight:600,
+              color:pwdMsg.startsWith('✅')?'#16a34a':'#dc2626'}}>{pwdMsg}</p>}
+          </>
+        ):(
+          <>
+            <p style={{fontSize:12,color:'#94a3b8',marginBottom:18}}>
+              Modo demo (sin Supabase): las contraseñas se guardan en este navegador.
+              Los cambios se guardan al instante. Contraseña por defecto: <strong>1234</strong>
+            </p>
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              {userList.map(u=>(
+                <div key={u.id} style={{display:'flex',alignItems:'center',gap:12}}>
+                  <div style={{width:130,fontSize:13,fontWeight:600,color:'#475569',flexShrink:0}}>
+                    {u.name}
+                  </div>
+                  <input type="text" className={inp} style={{maxWidth:200}}
+                    value={passwords[u.id]||''}
+                    onChange={e=>handlePassChange(u.id,e.target.value)}
+                    placeholder="Nueva contraseña"/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>
+                    {passwords[u.id]?`${passwords[u.id].length} caracteres`:'Sin contraseña (usa 1234)'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </Card>
 
       {/* ── Zona de peligro ── */}
