@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.3/babel.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Inter',system-ui,sans-serif;background:#f8f9ff;color:#091426}
@@ -68,6 +69,18 @@ const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'http://localhost:3002',setupDone:false};
 const loadSchool=()=>load('crm_school_v1',DEFAULT_SCHOOL);
 const saveSchool=v=>save('crm_school_v1',v);
+
+// ─── Supabase helpers ─────────────────────────────────────────────────────────
+let _supabase = null;
+function getSupabase() {
+  const cfg = loadSchool();
+  if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) return null;
+  if (!_supabase) {
+    _supabase = window.supabase?.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  }
+  return _supabase;
+}
+function resetSupabase() { _supabase = null; }
 
 // ─── Contraseñas (pre-Supabase) ───────────────────────────────────────────────
 const DEFAULT_PASSWORDS={admin:'1234'};
@@ -1951,11 +1964,15 @@ function Disponibilidad({user,professors,slots,setSlots}){
 // ─── BOT SYNC ─────────────────────────────────────────────────────────────────
 // Convierte slot del bot (array item) a formato CRM (object key)
 // ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
-function Configuracion({professors,students,setStudents,setSlots,setExamDays,schoolConfig,setSchoolConfig}){
+function Configuracion({professors,students,setStudents,setSlots,setExamDays,schoolConfig,setSchoolConfig,onSyncSupabase}){
   const [school,setSchool]=useState({...schoolConfig});
   const [passwords,setPasswords]=useState(loadPasswords());
   const [saved,setSaved]=useState(false);
   const [confirmReset,setConfirmReset]=useState(false);
+  const [supaStatus,setSupaStatus]=useState(null); // null | 'testing' | 'ok' | 'error'
+  const [supaMsg,setSupaMsg]=useState('');
+  const [syncing,setSyncing]=useState(false);
+  const [syncMsg,setSyncMsg]=useState('');
 
   const userList=[
     {id:'admin',name:'Administrador'},
@@ -1965,8 +1982,37 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
   const handleSaveSchool=()=>{
     saveSchool(school);
     setSchoolConfig(school);
+    resetSupabase();
     setSaved(true);
     setTimeout(()=>setSaved(false),2500);
+  };
+
+  const handleTestSupabase=async()=>{
+    setSupaStatus('testing');setSupaMsg('');
+    // Temporarily save current values to test them
+    const tmp={...loadSchool(),supabaseUrl:school.supabaseUrl,supabaseAnonKey:school.supabaseAnonKey};
+    saveSchool(tmp);resetSupabase();
+    const sb=getSupabase();
+    if(!sb){setSupaStatus('error');setSupaMsg('Credenciales incompletas');saveSchool(loadSchool());resetSupabase();return;}
+    try{
+      const {error}=await sb.from('schools').select('id').limit(1);
+      if(error)throw error;
+      setSupaStatus('ok');setSupaMsg('Conectado correctamente');
+    }catch(e){
+      setSupaStatus('error');setSupaMsg(e.message||'Error de conexión');
+    }
+  };
+
+  const handleSyncSupabase=async()=>{
+    setSyncing(true);setSyncMsg('');
+    try{
+      await onSyncSupabase();
+      setSyncMsg('Sincronización completada');
+    }catch(e){
+      setSyncMsg('Error: '+(e.message||'desconocido'));
+    }finally{
+      setSyncing(false);
+    }
   };
 
   const handlePassChange=(userId,val)=>{
@@ -2006,6 +2052,37 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
             onChange={e=>setSchool(s=>({...s,botUrl:e.target.value}))}
             placeholder="http://localhost:3002 o https://tu-bot.railway.app"/>
         </F>
+        <F label="Supabase URL">
+          <input className={inp} value={school.supabaseUrl||''}
+            onChange={e=>setSchool(s=>({...s,supabaseUrl:e.target.value}))}
+            placeholder="https://xxxx.supabase.co"/>
+        </F>
+        <F label="Supabase Anon Key">
+          <input className={inp} value={school.supabaseAnonKey||''}
+            onChange={e=>setSchool(s=>({...s,supabaseAnonKey:e.target.value}))}
+            placeholder="eyJhbGci..."/>
+        </F>
+        {(school.supabaseUrl&&school.supabaseAnonKey)&&(
+          <div style={{marginBottom:16}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <button type="button" onClick={handleTestSupabase} className={btnG}
+                disabled={supaStatus==='testing'} style={{opacity:supaStatus==='testing'?.6:1}}>
+                <Icon name="cable" size={16}/>
+                {supaStatus==='testing'?'Probando...':'Probar conexión'}
+              </button>
+              {supaStatus==='ok'&&<span style={{fontSize:13,color:'#16a34a',fontWeight:600}}>✅ {supaMsg}</span>}
+              {supaStatus==='error'&&<span style={{fontSize:13,color:'#dc2626',fontWeight:600}}>❌ {supaMsg}</span>}
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginTop:10,flexWrap:'wrap'}}>
+              <button type="button" onClick={handleSyncSupabase} className={btnG}
+                disabled={syncing} style={{opacity:syncing?.6:1}}>
+                <Icon name="cloud_upload" size={16}/>
+                {syncing?'Sincronizando...':'Sincronizar con Supabase'}
+              </button>
+              {syncMsg&&<span style={{fontSize:12,color:'#475569'}}>{syncMsg}</span>}
+            </div>
+          </div>
+        )}
         <F label="Color principal">
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
             {COLORS.map(c=>(
@@ -2130,6 +2207,32 @@ function App(){
   const [botStatus,setBotStatus]=useState('unknown');
   const [lastSync,setLastSync]=useState(null);
 
+  // Reset supabase client whenever school config changes (new credentials)
+  useEffect(()=>{ resetSupabase(); },[schoolConfig]);
+
+  const syncToSupabase=async()=>{
+    const sb=getSupabase();
+    if(!sb)throw new Error('Supabase no configurado');
+    const studentsArr=load('crm_students_v3',students);
+    const slotsObj=load('crm_slots_v4',slots);
+    const profsArr=load('crm_professors_v3',professors);
+    const slotsArr=Object.values(slotsObj);
+    const errors=[];
+    if(studentsArr.length){
+      const {error}=await sb.from('students').upsert(studentsArr,{onConflict:'id'});
+      if(error)errors.push('students: '+error.message);
+    }
+    if(slotsArr.length){
+      const {error}=await sb.from('slots').upsert(slotsArr,{onConflict:'id'});
+      if(error)errors.push('slots: '+error.message);
+    }
+    if(profsArr.length){
+      const {error}=await sb.from('professors').upsert(profsArr,{onConflict:'id'});
+      if(error)errors.push('professors: '+error.message);
+    }
+    if(errors.length)throw new Error(errors.join('; '));
+  };
+
   useEffect(()=>save('crm_professors_v3',professors),[professors]);
   useEffect(()=>save('crm_vehicles_v3',vehicles),[vehicles]);
   useEffect(()=>save('crm_students_v3',students),[students]);
@@ -2228,7 +2331,8 @@ function App(){
     estadisticas:   <Estadisticas {...shared} slots={slots}/>,
     configuracion:  <Configuracion professors={professors} students={students} setStudents={setStudents}
                       setSlots={setSlots} setExamDays={setExamDays}
-                      schoolConfig={schoolConfig} setSchoolConfig={setSchoolConfig}/>,
+                      schoolConfig={schoolConfig} setSchoolConfig={setSchoolConfig}
+                      onSyncSupabase={syncToSupabase}/>,
   };
 
   // Indicador de estado del bot en el sidebar

@@ -1,1 +1,18 @@
+# Credenciales — nunca subir
+.env
 bot-server.js
+
+# Datos locales del bot
+crm_slots.json
+crm_students.json
+crm_availability.json
+crm_blocked.json
+crm_pending.json
+
+# Node
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# macOS
+.DS_Store
