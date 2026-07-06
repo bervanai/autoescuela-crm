@@ -1964,7 +1964,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
 // ─── BOT SYNC ─────────────────────────────────────────────────────────────────
 // Convierte slot del bot (array item) a formato CRM (object key)
 // ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
-function Configuracion({professors,students,setStudents,setSlots,setExamDays,schoolConfig,setSchoolConfig,onSyncSupabase}){
+function Configuracion({professors,students,setStudents,setSlots,setExamDays,schoolConfig,setSchoolConfig,onSyncSupabase,onLoadSupabase}){
   const [school,setSchool]=useState({...schoolConfig});
   const [passwords,setPasswords]=useState(loadPasswords());
   const [saved,setSaved]=useState(false);
@@ -2007,11 +2007,25 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
     setSyncing(true);setSyncMsg('');
     try{
       await onSyncSupabase();
-      setSyncMsg('Sincronización completada');
+      setSyncMsg('✅ Datos subidos a Supabase');
     }catch(e){
-      setSyncMsg('Error: '+(e.message||'desconocido'));
+      setSyncMsg('❌ Error: '+(e.message||'desconocido'));
     }finally{
       setSyncing(false);
+    }
+  };
+
+  const [loading,setLoading]=useState(false);
+  const handleLoadSupabase=async()=>{
+    if(!confirm('Esto reemplazará los datos locales con los de Supabase. ¿Continuar?'))return;
+    setLoading(true);setSyncMsg('');
+    try{
+      const r=await onLoadSupabase();
+      setSyncMsg(`✅ Cargados: ${r.profesores} profesores, ${r.alumnos} alumnos, ${r.clases} clases`);
+    }catch(e){
+      setSyncMsg('❌ Error: '+(e.message||'desconocido'));
+    }finally{
+      setLoading(false);
     }
   };
 
@@ -2084,7 +2098,12 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
               <button type="button" onClick={handleSyncSupabase} className={btnG}
                 disabled={syncing} style={{opacity:syncing?.6:1}}>
                 <Icon name="cloud_upload" size={16}/>
-                {syncing?'Sincronizando...':'Sincronizar con Supabase'}
+                {syncing?'Sincronizando...':'Subir a Supabase'}
+              </button>
+              <button type="button" onClick={handleLoadSupabase} className={btnG}
+                disabled={loading} style={{opacity:loading?.6:1}}>
+                <Icon name="cloud_download" size={16}/>
+                {loading?'Cargando...':'Cargar desde Supabase'}
               </button>
               {syncMsg&&<span style={{fontSize:12,color:'#475569'}}>{syncMsg}</span>}
             </div>
@@ -2272,6 +2291,53 @@ function App(){
     if(errors.length)throw new Error(errors.join('; '));
   };
 
+  const loadFromSupabase=async()=>{
+    const sb=getSupabase();
+    if(!sb)throw new Error('Supabase no configurado');
+    const [profs,stus,slts]=await Promise.all([
+      sb.from('professors').select('*'),
+      sb.from('students').select('*'),
+      sb.from('slots').select('*'),
+    ]);
+    const err=profs.error||stus.error||slts.error;
+    if(err)throw new Error(err.message);
+    if(profs.data?.length){
+      setProfessors(profs.data.map(p=>({
+        id:p.id,name:p.name,color:p.color||'#1e3a5f',
+        phone:p.phone||'',email:p.email||'',
+        avatar:(p.name||'?').slice(0,2).toUpperCase(),active:p.active!==false,
+      })));
+    }
+    if(stus.data?.length){
+      setStudents(stus.data.map(s=>({
+        id:s.id,name:s.name,phone:s.phone||'',profId:s.prof_id,
+        license:s.license||'B',vehicleType:s.vehicle_type||'manual',
+        numClases:s.num_clases||0,bono:s.bono||'Sin bono',
+        tasasPagadas:!!s.tasas_pagadas,active:s.active!==false,
+        botActive:s.bot_active!==false,
+        examDate:s.exam_date||'',examResult:s.exam_result||null,
+      })));
+    }
+    if(slts.data?.length){
+      const next={};
+      slts.data.forEach(s=>{
+        next[s.id]={
+          id:s.id,
+          date:String(s.date).slice(0,10),
+          time:String(s.time).slice(0,5),
+          profId:s.prof_id,studentId:s.student_id||null,
+          vehicleId:s.vehicle_id||null,
+          slotType:s.slot_type||'practica',
+          duration:s.duration||45,
+          confirmed:s.status==='confirmed',
+          cancelled:s.status==='cancelled',
+        };
+      });
+      setSlots(next);
+    }
+    return {profesores:profs.data?.length||0,alumnos:stus.data?.length||0,clases:slts.data?.length||0};
+  };
+
   useEffect(()=>save('crm_professors_v3',professors),[professors]);
   useEffect(()=>save('crm_vehicles_v3',vehicles),[vehicles]);
   useEffect(()=>save('crm_students_v3',students),[students]);
@@ -2371,7 +2437,7 @@ function App(){
     configuracion:  <Configuracion professors={professors} students={students} setStudents={setStudents}
                       setSlots={setSlots} setExamDays={setExamDays}
                       schoolConfig={schoolConfig} setSchoolConfig={setSchoolConfig}
-                      onSyncSupabase={syncToSupabase}/>,
+                      onSyncSupabase={syncToSupabase} onLoadSupabase={loadFromSupabase}/>,
   };
 
   // Indicador de estado del bot en el sidebar
