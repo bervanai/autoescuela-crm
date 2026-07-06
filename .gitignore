@@ -1,6 +1,5 @@
 # Credenciales — nunca subir
 .env
-bot-server.js
 
 # Datos locales del bot
 crm_slots.json
