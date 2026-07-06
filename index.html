@@ -66,7 +66,7 @@ const load=(k,fb)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f
 const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
 // ─── Config de la autoescuela ─────────────────────────────────────────────────
-const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'http://localhost:3002',setupDone:false};
+const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'http://localhost:3002',schoolId:'',setupDone:false};
 const loadSchool=()=>load('crm_school_v1',DEFAULT_SCHOOL);
 const saveSchool=v=>save('crm_school_v1',v);
 
@@ -559,7 +559,7 @@ function Alumnos({students,setStudents,professors,user}){
   const [deleting,setDeleting]=useState(null);
   const [sending,setSending]=useState({}); // {studentId: 'sending'|'ok'|'error'}
 
-  const botUrl=load('crm_bot_url','http://localhost:3002');
+  const botUrl=loadSchool().botUrl||'http://localhost:3002';
 
   const sendBookingMsg=async(stu)=>{
     setSending(s=>({...s,[stu.id]:'sending'}));
@@ -2022,8 +2022,7 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
   };
 
   const handleResetDemo=()=>{
-    // Borrar todos los datos y recargar con datos limpios
-    ['crm_students_v3','crm_slots_v4','crm_exam_days_v3','crm_passwords_v1'].forEach(k=>localStorage.removeItem(k));
+    ['crm_students_v3','crm_slots_v4','crm_exam_days_v3','crm_passwords_v1','crm_avail_v1','crm_blocked_v1'].forEach(k=>localStorage.removeItem(k));
     setStudents([]);
     setSlots({});
     setExamDays([]);
@@ -2061,6 +2060,14 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
           <input className={inp} value={school.supabaseAnonKey||''}
             onChange={e=>setSchool(s=>({...s,supabaseAnonKey:e.target.value}))}
             placeholder="eyJhbGci..."/>
+        </F>
+        <F label="School ID (UUID de Supabase — tabla schools)">
+          <input className={inp} value={school.schoolId||''}
+            onChange={e=>setSchool(s=>({...s,schoolId:e.target.value}))}
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"/>
+          <p style={{fontSize:11,color:'#94a3b8',marginTop:4}}>
+            Necesario para sincronizar datos. Encuéntralo en Table Editor → schools.
+          </p>
         </F>
         {(school.supabaseUrl&&school.supabaseAnonKey)&&(
           <div style={{marginBottom:16}}>
@@ -2213,22 +2220,54 @@ function App(){
   const syncToSupabase=async()=>{
     const sb=getSupabase();
     if(!sb)throw new Error('Supabase no configurado');
+    const cfg=loadSchool();
+    const sid=cfg.schoolId||null;
     const studentsArr=load('crm_students_v3',students);
     const slotsObj=load('crm_slots_v4',slots);
     const profsArr=load('crm_professors_v3',professors);
     const slotsArr=Object.values(slotsObj);
     const errors=[];
+    // camelCase → snake_case + school_id
+    const normStu=s=>({
+      id:s.id,school_id:sid,name:s.name,phone:s.phone,
+      prof_id:s.profId||s.prof_id||null,
+      license:s.license||'B',
+      vehicle_type:s.vehicleType||s.vehicle_type||'manual',
+      num_clases:s.numClases??s.num_clases??0,
+      bono:s.bono||null,
+      tasas_pagadas:!!s.tasasPagadas,
+      active:s.active!==false,
+      bot_active:s.botActive!==false,
+      exam_date:s.examDate||s.exam_date||null,
+      exam_result:s.examResult||s.exam_result||null,
+    });
+    const normSlot=s=>({
+      id:s.id,school_id:sid,
+      student_id:s.studentId||s.student_id||null,
+      prof_id:s.profId||s.prof_id||null,
+      date:s.date,time:s.time,
+      duration:s.duration||45,
+      slot_type:s.slotType||s.slot_type||s.type||'practica',
+      status:s.cancelled?'cancelled':s.confirmed?'confirmed':'pending',
+      reminder_sent:!!(s.reminderSent||s.reminder_sent),
+      created_by:s.fromBot?'bot':'admin',
+    });
+    const normProf=p=>({
+      id:p.id,school_id:sid,name:p.name,
+      color:p.color||'#1e3a5f',
+      phone:p.phone||null,email:p.email||null,
+    });
     if(studentsArr.length){
-      const {error}=await sb.from('students').upsert(studentsArr,{onConflict:'id'});
-      if(error)errors.push('students: '+error.message);
+      const {error}=await sb.from('students').upsert(studentsArr.map(normStu),{onConflict:'id'});
+      if(error)errors.push('alumnos: '+error.message);
     }
     if(slotsArr.length){
-      const {error}=await sb.from('slots').upsert(slotsArr,{onConflict:'id'});
-      if(error)errors.push('slots: '+error.message);
+      const {error}=await sb.from('slots').upsert(slotsArr.map(normSlot),{onConflict:'id'});
+      if(error)errors.push('clases: '+error.message);
     }
     if(profsArr.length){
-      const {error}=await sb.from('professors').upsert(profsArr,{onConflict:'id'});
-      if(error)errors.push('professors: '+error.message);
+      const {error}=await sb.from('professors').upsert(profsArr.map(normProf),{onConflict:'id'});
+      if(error)errors.push('profesores: '+error.message);
     }
     if(errors.length)throw new Error(errors.join('; '));
   };
