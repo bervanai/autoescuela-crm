@@ -66,7 +66,7 @@ const load=(k,fb)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f
 const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
 // ─── Config de la autoescuela ─────────────────────────────────────────────────
-const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'http://localhost:3002',schoolId:'',setupDone:false};
+const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'https://autoescuela-bot-production.up.railway.app',schoolId:'',setupDone:false};
 const loadSchool=()=>load('crm_school_v1',DEFAULT_SCHOOL);
 const saveSchool=v=>save('crm_school_v1',v);
 

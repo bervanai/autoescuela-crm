@@ -65,29 +65,31 @@ El CRM ya está desplegado en GitHub Pages automáticamente.
 
 ---
 
-## Paso 3 — Bot en Railway
+## Paso 3 — Bot en Railway ✅ DESPLEGADO (7 jul 2026)
 
-> El CLI de Railway ya está instalado en este Mac (`railway 5.23.3`, via npm).
-> Falta hacer `railway login` (pide navegador). Con la sesión iniciada, Claude
-> puede crear el proyecto, las variables y el deploy automáticamente.
-
-1. Crear cuenta en [railway.app](https://railway.app)
-2. **New Project → Deploy from GitHub repo** → seleccionar `autoescuela-crm`
-3. En **Variables** añadir:
-
-| Variable | Valor |
+| Dato | Valor |
 |---|---|
-| `TWILIO_ACCOUNT_SID` | De Twilio Console |
-| `TWILIO_AUTH_TOKEN` | De Twilio Console |
-| `TWILIO_SANDBOX_NUM` | `whatsapp:+14155238886` |
-| `SUPABASE_URL` | Del paso 1 |
-| `SUPABASE_SERVICE_KEY` | Service role key de Supabase |
-| `SCHOOL_ID` | UUID de la escuela (paso 1) |
-| `NOTIFY_ADMIN` | Teléfono admin con prefijo: `+34600000000` |
+| Proyecto | `autoescuela-bot` (cuenta legionthunder2@gmail.com) |
+| URL pública | `https://autoescuela-bot-production.up.railway.app` |
+| Healthcheck | `/api/ping` → responde ✅ |
 
-4. Railway despliega automáticamente → copiar la URL pública (ej: `autoescuela-bot.up.railway.app`)
-5. En **Twilio Console → Sandbox Settings** → pegar: `https://autoescuela-bot.up.railway.app/bot`
-6. En **CRM → Configuración** → URL del bot: `https://autoescuela-bot.up.railway.app`
+Variables ya configuradas: `SUPABASE_URL`, `SCHOOL_ID`, `NOTIFY_ADMIN`, `TWILIO_SANDBOX_NUM`.
+
+**Falta añadir en [Railway → Variables](https://railway.com/project/86139dc4-3425-4eb6-9398-212da0197c68)** (secretos, los pega el dueño):
+
+| Variable | De dónde |
+|---|---|
+| `SUPABASE_SERVICE_KEY` | Supabase → Settings → API → `service_role` |
+| `TWILIO_ACCOUNT_SID` | Twilio Console |
+| `TWILIO_AUTH_TOKEN` | Twilio Console |
+
+Al guardarlas, Railway redepliega solo y el bot pasa de modo `json_local` a `supabase`
+(verificar con `curl https://autoescuela-bot-production.up.railway.app/api/ping`).
+
+**Último paso**: en **Twilio Console → Sandbox Settings** pegar como webhook:
+`https://autoescuela-bot-production.up.railway.app/bot`
+
+> Deploy manual desde este Mac: `cd ~/Desktop/autoescuela-crm && railway up --detach`
 
 ---
 

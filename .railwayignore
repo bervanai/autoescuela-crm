@@ -1,0 +1,14 @@
+# Nunca subir secretos ni datos locales
+.env
+crm_slots.json
+crm_students.json
+crm_availability.json
+crm_blocked.json
+crm_pending.json
+
+# Dependencias (Railway las instala con npm install)
+node_modules/
+
+# Git y macOS
+.git/
+.DS_Store
