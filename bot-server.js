@@ -29,6 +29,16 @@ if (USE_SUPABASE) {
 
 const SCHOOL_ID = process.env.SCHOOL_ID || null;
 
+// ── Nombre de la escuela (leído de Supabase, con fallback) ──
+let SCHOOL_NAME = process.env.SCHOOL_NAME || 'Autoescuela Exit';
+async function refreshSchoolName() {
+  if (!USE_SUPABASE || !SCHOOL_ID) return;
+  try {
+    const { data } = await supabase.from('schools').select('name').eq('id', SCHOOL_ID).single();
+    if (data?.name) SCHOOL_NAME = data.name;
+  } catch (e) {}
+}
+
 // ── Express ───────────────────────────────────────────────
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -643,7 +653,7 @@ async function sendBookingRequests(force = false) {
 
     const slot = free[0];
     const msg =
-      `Hola ${st.name} 👋\n\n` +
+      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
       `Para la semana que viene te propongo:\n\n` +
       `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
       `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
@@ -681,7 +691,7 @@ async function sendReminders() {
     if (!st?.phone) continue;
 
     const msg =
-      `⏰ *Recordatorio de clase*\n\n` +
+      `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
       `Hola ${st.name}, tienes clase el *${slot.dayName || formatDate(slot.date)}* a las *${slot.time}h*.\n\n` +
       `Si no puedes venir, responde *CANCELAR*.\n` +
       `Si no respondes, la clase se mantiene. ✅`;
@@ -747,7 +757,7 @@ app.post('/bot', async (req, res) => {
     const allStudents = await loadStudents();
     const st = allStudents.find(s => s.phone === from && s.active);
     if (!st) {
-      await sendWA(from, `Hola 👋 No te encontramos en el sistema. Contacta con tu autoescuela.`);
+      await sendWA(from, `Hola 👋 Soy el asistente de *${SCHOOL_NAME}*. No encuentro tu número en el sistema — contacta con la autoescuela para darte de alta.`);
       res.send('<Response></Response>');
       return;
     }
@@ -762,7 +772,7 @@ app.post('/bot', async (req, res) => {
 
     const slot = free[0];
     const msg =
-      `Hola ${st.name} 👋\n\n` +
+      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
       `El próximo hueco disponible con tu profesor es:\n\n` +
       `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
       `¿Te viene bien? Responde *SÍ* para reservarlo o *NO* para ver otros huecos.`;
@@ -1077,7 +1087,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
 
   const slot = free[0];
   const msg =
-    `Hola ${st.name} 👋\n\n` +
+    `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
     `Para la semana que viene te propongo:\n\n` +
     `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
     `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
@@ -1130,6 +1140,8 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
 
 const PORT = parseInt(process.env.PORT || '3002', 10);
 app.listen(PORT, () => {
+  refreshSchoolName();                             // nombre real desde Supabase
+  setInterval(refreshSchoolName, 3600000);         // refrescar cada hora
   console.log(`\n🚗 AutoEscuela Bot — Puerto ${PORT}`);
   console.log('────────────────────────────────────────');
   console.log(`💾 Modo datos:   ${USE_SUPABASE ? 'Supabase' : 'JSON local'}`);

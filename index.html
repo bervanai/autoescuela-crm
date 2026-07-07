@@ -67,7 +67,7 @@ const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
 // ─── Config de la autoescuela ─────────────────────────────────────────────────
 const DEFAULT_SCHOOL={
-  name:'AutoEscuela',color:'#fd761a',
+  name:'Autoescuela Exit',color:'#fd761a',
   botUrl:'https://autoescuela-bot-production.up.railway.app',
   supabaseUrl:'https://vxpavrtjgvrxqimsemku.supabase.co',
   // anon key: pública por diseño (el acceso real lo controlan RLS + sesiones)
@@ -81,6 +81,8 @@ const loadSchool=()=>{
   const merged={...DEFAULT_SCHOOL,...stored};
   // Migrar botUrl antiguo de desarrollo local al de producción
   if(merged.botUrl==='http://localhost:3002')merged.botUrl=DEFAULT_SCHOOL.botUrl;
+  // Migrar el nombre por defecto antiguo al nuevo
+  if(merged.name==='AutoEscuela')merged.name=DEFAULT_SCHOOL.name;
   return merged;
 };
 const saveSchool=v=>save('crm_school_v1',v);
@@ -1454,12 +1456,12 @@ function BotSim({students,slots,professors}){
           border:'1px solid #e2e8f0',overflow:'hidden',background:'#fff'}}>
           <div style={{background:'#075e54',padding:'12px 16px',display:'flex',alignItems:'center',gap:10}}>
             <div style={{width:38,height:38,borderRadius:'50%',background:'#128c7e',
-              display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,fontWeight:700,color:'#fff'}}>
-              {stu?stu.name.slice(0,1):'?'}
+              display:'flex',alignItems:'center',justifyContent:'center',fontSize:19}}>
+              🚗
             </div>
             <div>
-              <div style={{fontWeight:600,color:'#fff',fontSize:14}}>{stu?.name||'Selecciona alumno'}</div>
-              <div style={{fontSize:11,color:'rgba(255,255,255,.7)'}}>AutoEscuela Bot · WhatsApp</div>
+              <div style={{fontWeight:600,color:'#fff',fontSize:14}}>{loadSchool().name}</div>
+              <div style={{fontSize:11,color:'rgba(255,255,255,.7)'}}>Bot WhatsApp · {stu?.name||'selecciona alumno'}</div>
             </div>
           </div>
           <div className="chat-area" ref={ref} style={{flex:1}}>
