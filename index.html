@@ -2597,9 +2597,30 @@ function App(){
       }
     };
     const t=setTimeout(push,5000);       // primer push a los 5s de entrar
-    const iv=setInterval(push,60000);    // luego cada minuto
+    const iv=setInterval(push,60000);    // red de seguridad: cada minuto
     return()=>{cancelled=true;clearTimeout(t);clearInterval(iv);};
   },[user,schoolConfig]);
+
+  // ── Push instantáneo: cualquier cambio se sube a Supabase en ~1.5s ──
+  const instantTimer=useRef(null);
+  const lastPushed=useRef('');
+  useEffect(()=>{
+    if(!user||user.role!=='admin')return;
+    if(!getSupabase()||!sessionStorage.getItem('crm_token'))return;
+    const snapshot=JSON.stringify([students,slots,professors,vehicles]);
+    if(snapshot===lastPushed.current)return; // nada cambió de verdad (p.ej. sync del bot)
+    clearTimeout(instantTimer.current);
+    instantTimer.current=setTimeout(async()=>{
+      try{
+        await syncToSupabase();
+        lastPushed.current=snapshot;
+        setCloudStatus('ok');setLastCloudSync(new Date());
+      }catch(e){
+        setCloudStatus('error');
+      }
+    },1500);
+    return()=>clearTimeout(instantTimer.current);
+  },[students,slots,professors,vehicles,user]);
 
   // ── Wrapper setSlots que también envía al bot ────────────
   const setSlotsAndSync=async(updater)=>{
