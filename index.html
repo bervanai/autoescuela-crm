@@ -219,6 +219,8 @@ function LoginScreen({onLogin, professors}){
         const {data,error:err}=await sb.rpc('verify_login',{p_user_id:userId,p_password:pass});
         if(err)throw err;
         if(data&&data.length){
+          // Guardar el token de sesión (12h) para las RPC de datos
+          if(data[0].token)sessionStorage.setItem('crm_token',data[0].token);
           onLogin(u);
         } else {
           setError('Contraseña incorrecta');setPass('');
@@ -1792,11 +1794,35 @@ function Disponibilidad({user,professors,slots,setSlots}){
     return arr.some(s=>s.profId===viewProf&&s.date===date&&s.time===hour&&s.studentId&&s.status!=='cancelled');
   }
 
-  function handleSave(){
+  const [cloudErr,setCloudErr]=useState('');
+  async function handleSave(){
     save('crm_avail_v1',avail);
     save('crm_blocked_v1',blocked);
-    setSaved(true);
+    setSaved(true);setCloudErr('');
     setTimeout(()=>setSaved(false),2500);
+    // Empujar a Supabase (el bot lee la disponibilidad desde allí)
+    const sb=getSupabase();
+    const token=sessionStorage.getItem('crm_token');
+    if(sb&&token){
+      const availRows=[];
+      Object.entries(avail[viewProf]||{}).forEach(([dk,hours])=>{
+        if(['lun','mar','mie','jue','vie','sab'].includes(dk))
+          availRows.push({prof_id:viewProf,day_key:dk,hours:hours||[]});
+      });
+      const blockedRows=Object.values(blocked)
+        .filter(b=>b&&b.profId===viewProf&&b.date&&b.hour)
+        .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
+      try{
+        const {error}=await sb.rpc('crm_save_data',{
+          p_token:token,
+          p_availability:availRows,
+          p_blocked:blockedRows,
+        });
+        if(error)throw error;
+      }catch(e){
+        setCloudErr('No se pudo subir a la nube: '+(e.message||'error'));
+      }
+    }
   }
 
   const profAvail=avail[viewProf]||{};
@@ -1817,13 +1843,16 @@ function Disponibilidad({user,professors,slots,setSlots}){
               Gestiona los horarios disponibles y bloquea huecos para la semana siguiente
             </p>
           </div>
-          <button onClick={handleSave}
-            style={{display:'flex',alignItems:'center',gap:6,padding:'9px 18px',borderRadius:8,
-              fontSize:13,fontWeight:600,cursor:'pointer',border:'none',
-              background:saved?'#16a34a':'#fd761a',color:'#fff',transition:'background .3s'}}>
-            <Icon name={saved?'check_circle':'save'} size={16}/>
-            {saved?'¡Guardado!':'Guardar cambios'}
-          </button>
+          <div style={{textAlign:'right'}}>
+            <button onClick={handleSave}
+              style={{display:'flex',alignItems:'center',gap:6,padding:'9px 18px',borderRadius:8,
+                fontSize:13,fontWeight:600,cursor:'pointer',border:'none',
+                background:saved?'#16a34a':'#fd761a',color:'#fff',transition:'background .3s'}}>
+              <Icon name={saved?'check_circle':'save'} size={16}/>
+              {saved?'¡Guardado!':'Guardar cambios'}
+            </button>
+            {cloudErr&&<p style={{fontSize:11,color:'#dc2626',marginTop:5,maxWidth:220}}>{cloudErr}</p>}
+          </div>
         </div>
 
         {/* Selector de profesor (solo admin) */}
@@ -2043,7 +2072,8 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
     setLoading(true);setSyncMsg('');
     try{
       const r=await onLoadSupabase();
-      setSyncMsg(`✅ Cargados: ${r.profesores} profesores, ${r.alumnos} alumnos, ${r.clases} clases`);
+      setSyncMsg(`✅ Cargados: ${r.profesores} profesores, ${r.alumnos} alumnos, ${r.clases} clases — recargando…`);
+      setTimeout(()=>window.location.reload(),1400);
     }catch(e){
       setSyncMsg('❌ Error: '+(e.message||'desconocido'));
     }finally{
@@ -2338,16 +2368,19 @@ function App(){
   const syncToSupabase=async()=>{
     const sb=getSupabase();
     if(!sb)throw new Error('Supabase no configurado');
-    const cfg=loadSchool();
-    const sid=cfg.schoolId||null;
-    const studentsArr=load('crm_students_v3',students);
-    const slotsObj=load('crm_slots_v4',slots);
-    const profsArr=load('crm_professors_v3',professors);
-    const slotsArr=Object.values(slotsObj);
-    const errors=[];
-    // camelCase → snake_case + school_id
+    const token=sessionStorage.getItem('crm_token');
+    if(!token)throw new Error('Cierra sesión y vuelve a entrar para activar la sincronización');
+    const studentsArr=load('crm_students_v3',students)||[];
+    const slotsArr=Object.values(load('crm_slots_v4',slots)||{});
+    const profsArr=load('crm_professors_v3',professors)||[];
+    const vehiclesArr=load('crm_vehicles_v3',vehicles)||[];
+    // camelCase → snake_case (el servidor pone el school_id según la sesión)
+    const normProf=p=>({
+      id:p.id,name:p.name,color:p.color||'#1e3a5f',
+      phone:p.phone||null,email:p.email||null,active:p.active!==false,
+    });
     const normStu=s=>({
-      id:s.id,school_id:sid,name:s.name,phone:s.phone,
+      id:s.id,name:s.name,phone:s.phone||null,
       prof_id:s.profId||s.prof_id||null,
       license:s.license||'B',
       vehicle_type:s.vehicleType||s.vehicle_type||'manual',
@@ -2359,56 +2392,71 @@ function App(){
       exam_date:s.examDate||s.exam_date||null,
       exam_result:s.examResult||s.exam_result||null,
     });
+    const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
     const normSlot=s=>({
-      id:s.id,school_id:sid,
+      id:s.id,
       student_id:s.studentId||s.student_id||null,
       prof_id:s.profId||s.prof_id||null,
+      vehicle_id:s.vehicleId||s.vehicle_id||null,
       date:s.date,time:s.time,
       duration:s.duration||45,
       slot_type:s.slotType||s.slot_type||s.type||'practica',
       status:s.cancelled?'cancelled':s.confirmed?'confirmed':'pending',
       reminder_sent:!!(s.reminderSent||s.reminder_sent),
-      created_by:s.fromBot?'bot':'admin',
+      created_by:s.fromBot?'bot':'crm',
     });
-    const normProf=p=>({
-      id:p.id,school_id:sid,name:p.name,
-      color:p.color||'#1e3a5f',
-      phone:p.phone||null,email:p.email||null,
+    // Disponibilidad y bloqueos desde localStorage
+    const availObj=load('crm_avail_v1',{})||{};
+    const availRows=[];
+    Object.entries(availObj).forEach(([profId,days])=>{
+      Object.entries(days||{}).forEach(([dk,hours])=>{
+        if(['lun','mar','mie','jue','vie','sab'].includes(dk))
+          availRows.push({prof_id:profId,day_key:dk,hours:hours||[]});
+      });
     });
-    if(studentsArr.length){
-      const {error}=await sb.from('students').upsert(studentsArr.map(normStu),{onConflict:'id'});
-      if(error)errors.push('alumnos: '+error.message);
+    const blockedObj=load('crm_blocked_v1',{})||{};
+    const blockedRows=Object.values(blockedObj)
+      .filter(b=>b&&b.profId&&b.date&&b.hour)
+      .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
+
+    const {data,error}=await sb.rpc('crm_save_data',{
+      p_token:token,
+      p_professors:profsArr.map(normProf),
+      p_students:studentsArr.filter(s=>s.id&&s.name).map(normStu),
+      p_vehicles:vehiclesArr.map(normVeh),
+      p_slots:slotsArr.filter(s=>s.id&&s.date&&s.time).map(normSlot),
+      p_availability:availRows,
+      p_blocked:blockedRows,
+    });
+    if(error){
+      if((error.message||'').includes('SESION_INVALIDA'))
+        throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
+      throw new Error(error.message);
     }
-    if(slotsArr.length){
-      const {error}=await sb.from('slots').upsert(slotsArr.map(normSlot),{onConflict:'id'});
-      if(error)errors.push('clases: '+error.message);
-    }
-    if(profsArr.length){
-      const {error}=await sb.from('professors').upsert(profsArr.map(normProf),{onConflict:'id'});
-      if(error)errors.push('profesores: '+error.message);
-    }
-    if(errors.length)throw new Error(errors.join('; '));
+    return data;
   };
 
   const loadFromSupabase=async()=>{
     const sb=getSupabase();
     if(!sb)throw new Error('Supabase no configurado');
-    const [profs,stus,slts]=await Promise.all([
-      sb.from('professors').select('*'),
-      sb.from('students').select('*'),
-      sb.from('slots').select('*'),
-    ]);
-    const err=profs.error||stus.error||slts.error;
-    if(err)throw new Error(err.message);
-    if(profs.data?.length){
-      setProfessors(profs.data.map(p=>({
+    const token=sessionStorage.getItem('crm_token');
+    if(!token)throw new Error('Cierra sesión y vuelve a entrar para activar la sincronización');
+    const {data,error}=await sb.rpc('crm_load_data',{p_token:token});
+    if(error){
+      if((error.message||'').includes('SESION_INVALIDA'))
+        throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
+      throw new Error(error.message);
+    }
+    const d=data||{};
+    if(d.professors?.length){
+      setProfessors(d.professors.map(p=>({
         id:p.id,name:p.name,color:p.color||'#1e3a5f',
         phone:p.phone||'',email:p.email||'',
         avatar:(p.name||'?').slice(0,2).toUpperCase(),active:p.active!==false,
       })));
     }
-    if(stus.data?.length){
-      setStudents(stus.data.map(s=>({
+    if(d.students?.length){
+      setStudents(d.students.map(s=>({
         id:s.id,name:s.name,phone:s.phone||'',profId:s.prof_id,
         license:s.license||'B',vehicleType:s.vehicle_type||'manual',
         numClases:s.num_clases||0,bono:s.bono||'Sin bono',
@@ -2417,9 +2465,12 @@ function App(){
         examDate:s.exam_date||'',examResult:s.exam_result||null,
       })));
     }
-    if(slts.data?.length){
+    if(d.vehicles?.length){
+      setVehicles(d.vehicles.map(v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'})));
+    }
+    if(d.slots?.length){
       const next={};
-      slts.data.forEach(s=>{
+      d.slots.forEach(s=>{
         next[s.id]={
           id:s.id,
           date:String(s.date).slice(0,10),
@@ -2434,7 +2485,29 @@ function App(){
       });
       setSlots(next);
     }
-    return {profesores:profs.data?.length||0,alumnos:stus.data?.length||0,clases:slts.data?.length||0};
+    // Disponibilidad y bloqueos → localStorage (los lee el componente Disponibilidad)
+    if(d.availability?.length){
+      const avail={};
+      d.availability.forEach(a=>{
+        if(!avail[a.prof_id])avail[a.prof_id]={};
+        avail[a.prof_id][a.day_key]=(a.hours||[]).map(h=>String(h).slice(0,5));
+      });
+      save('crm_avail_v1',avail);
+    }
+    if(d.blocked?.length){
+      const blocked={};
+      d.blocked.forEach(b=>{
+        const hour=String(b.hour).slice(0,5);
+        const date=String(b.date).slice(0,10);
+        blocked[`${b.prof_id}_${date}_${hour}`]={profId:b.prof_id,date,hour,blockedAt:Date.now()};
+      });
+      save('crm_blocked_v1',blocked);
+    }
+    return {
+      profesores:d.professors?.length||0,
+      alumnos:d.students?.length||0,
+      clases:d.slots?.length||0,
+    };
   };
 
   useEffect(()=>save('crm_professors_v3',professors),[professors]);
@@ -2493,6 +2566,26 @@ function App(){
     return()=>clearInterval(iv);
   },[user,botUrl]);
 
+  // ── Auto-sync con Supabase cada 60s (solo admin con sesión válida) ──
+  const [cloudStatus,setCloudStatus]=useState('off'); // off | ok | error
+  const [lastCloudSync,setLastCloudSync]=useState(null);
+  useEffect(()=>{
+    if(!user||user.role!=='admin')return;
+    if(!getSupabase()||!sessionStorage.getItem('crm_token')){setCloudStatus('off');return;}
+    let cancelled=false;
+    const push=async()=>{
+      try{
+        await syncToSupabase();
+        if(!cancelled){setCloudStatus('ok');setLastCloudSync(new Date());}
+      }catch(e){
+        if(!cancelled)setCloudStatus('error');
+      }
+    };
+    const t=setTimeout(push,5000);       // primer push a los 5s de entrar
+    const iv=setInterval(push,60000);    // luego cada minuto
+    return()=>{cancelled=true;clearTimeout(t);clearInterval(iv);};
+  },[user,schoolConfig]);
+
   // ── Wrapper setSlots que también envía al bot ────────────
   const setSlotsAndSync=async(updater)=>{
     setSlots(prev=>{
@@ -2519,7 +2612,13 @@ function App(){
   };
 
   const login=u=>{setUser(u);sessionStorage.setItem('crm_u',JSON.stringify(u));setPage(u.role==='admin'?'dashboard':'horario');};
-  const logout=()=>{setUser(null);sessionStorage.removeItem('crm_u');};
+  const logout=()=>{
+    const t=sessionStorage.getItem('crm_token');
+    const sb=getSupabase();
+    if(t&&sb)sb.rpc('crm_logout',{p_token:t}).catch(()=>{});
+    sessionStorage.removeItem('crm_token');
+    setUser(null);sessionStorage.removeItem('crm_u');
+  };
 
   if(!user)return <LoginScreen onLogin={login} professors={professors}/>;
 
@@ -2566,6 +2665,17 @@ function App(){
           style={{marginTop:4,width:'100%',fontSize:10,padding:'3px 6px',borderRadius:4,
             border:'1px solid rgba(255,255,255,.15)',background:'rgba(255,255,255,.07)',
             color:'#fff',outline:'none'}}/>
+      )}
+      {cloudStatus!=='off'&&(
+        <div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,marginTop:6}}>
+          <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
+            background:cloudStatus==='ok'?'#38bdf8':'#ef4444'}}/>
+          <span style={{color:cloudStatus==='ok'?'#7dd3fc':'#fca5a5'}}>
+            {cloudStatus==='ok'
+              ?`Nube${lastCloudSync?' · '+lastCloudSync.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'}):''}`
+              :'Error de nube'}
+          </span>
+        </div>
       )}
     </div>
   );
