@@ -69,6 +69,21 @@ const DAY_KEY_MAP   = { 1:'lun', 2:'mar', 3:'mie', 4:'jue', 5:'vie', 6:'sab' };
 // ── Conversaciones activas (siempre en RAM) ───────────────
 const pending = {};
 
+// ── Normalización de teléfonos ────────────────────────────
+// Las autoescuelas escriben los números sin prefijo ("644299702"):
+// añadimos +34 a los números españoles de 9 cifras para que Twilio
+// y las claves de `pending` coincidan siempre.
+function normalizePhone(p) {
+  if (!p) return p;
+  let s = String(p).replace(/[\s\-\.\(\)]/g, '');
+  if (s.startsWith('00')) s = '+' + s.slice(2);
+  if (!s.startsWith('+')) {
+    if (/^[679]\d{8}$/.test(s))      s = '+34' + s; // móvil/fijo España
+    else if (/^34\d{9}$/.test(s))    s = '+' + s;
+  }
+  return s;
+}
+
 // ════════════════════════════════════════════════════════════
 // CAPA DE DATOS — async, con Supabase o JSON según config
 // ════════════════════════════════════════════════════════════
@@ -84,7 +99,10 @@ async function loadStudents() {
     return (data || []).map(normalizeStudent);
   }
   try {
-    if (fs.existsSync(STUDENTS_FILE)) return JSON.parse(fs.readFileSync(STUDENTS_FILE, 'utf8'));
+    if (fs.existsSync(STUDENTS_FILE)) {
+      const arr = JSON.parse(fs.readFileSync(STUDENTS_FILE, 'utf8'));
+      return arr.map(s => ({ ...s, phone: normalizePhone(s.phone) }));
+    }
   } catch (e) {}
   return [
     { id: 's1', name: 'Carlos Mendoza',  phone: '+34644299702', profId: 'prof_inaki',  active: true, botActive: true },
@@ -273,7 +291,7 @@ function normalizeStudent(row) {
     schoolId:    row.school_id,
     profId:      row.prof_id,
     name:        row.name,
-    phone:       row.phone,
+    phone:       normalizePhone(row.phone),
     vehicleType: row.vehicle_type,
     numClases:   row.num_clases,
     active:      row.active,
@@ -539,6 +557,7 @@ function parseBookingText(text) {
 // ════════════════════════════════════════════════════════════
 
 async function sendWA(to, body) {
+  to = normalizePhone(to);
   if (!client) {
     console.log(`🚫 (Twilio no configurado) mensaje NO enviado a ${to}: ${body.substring(0, 60).replace(/\n/g, ' ')}`);
     return;
