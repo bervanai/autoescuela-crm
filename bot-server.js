@@ -269,6 +269,19 @@ async function loadAvailability() {
   return null;
 }
 
+// ── Días de examen (bloquean el día entero para clases) ───
+async function loadExamDays() {
+  if (USE_SUPABASE) {
+    const q = supabase.from('school_config').select('extra_config');
+    if (SCHOOL_ID) q.eq('school_id', SCHOOL_ID);
+    const { data, error } = await q;
+    if (error) { console.error('Supabase loadExamDays:', error.message); return []; }
+    const ec = data?.[0]?.extra_config;
+    return Array.isArray(ec?.exam_days) ? ec.exam_days.map(d => String(d).substring(0, 10)) : [];
+  }
+  return [];
+}
+
 // ── Blocked hours ─────────────────────────────────────────
 async function loadBlocked() {
   if (USE_SUPABASE) {
@@ -460,7 +473,8 @@ function dateForDow(dow) {
 // ════════════════════════════════════════════════════════════
 
 async function nextFreeSlots(profId, count = 8, fromDate = null) {
-  const slots  = await loadSlots();
+  const slots    = await loadSlots();
+  const examDays = await loadExamDays();
   const start  = fromDate ? new Date(fromDate) : new Date();
   if (!fromDate) start.setDate(start.getDate() + 1);
   start.setHours(0, 0, 0, 0);
@@ -472,6 +486,7 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
     const dow  = dt.getDay();
     if (dow === 0) continue; // sin domingos
     const date  = dt.toISOString().split('T')[0];
+    if (examDays.includes(date)) continue; // día de examen: sin clases
     const avail = await hoursForProfDay(profId, dow);
 
     for (const hour of avail) {
@@ -497,6 +512,8 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
 }
 
 async function isSlotFree(profId, date, time) {
+  const examDays = await loadExamDays();
+  if (examDays.includes(String(date).substring(0, 10))) return false;
   if (await isBlockedSlot(profId, date, time)) return false;
   const slots = await loadSlots();
   return !slots.some(

@@ -2480,6 +2480,7 @@ function App(){
       p_slots:slotsArr.filter(s=>s.id&&s.date&&s.time).map(normSlot),
       p_availability:availRows,
       p_blocked:blockedRows,
+      p_exam_days:load('crm_exam_days_v3',[])||[],
     });
     if(error){
       if((error.message||'').includes('SESION_INVALIDA'))
@@ -2546,6 +2547,10 @@ function App(){
       blockedMap[`${b.prof_id}_${date}_${hour}`]={profId:b.prof_id,date,hour,blockedAt:Date.now()};
     });
     save('crm_blocked_v1',blockedMap);
+    // Días de examen
+    const examArr=(d.exam_days||[]).map(x=>String(x).slice(0,10));
+    save('crm_exam_days_v3',examArr);
+    setExamDays(examArr);
     return {
       profesores:d.professors?.length||0,
       alumnos:d.students?.length||0,
@@ -2655,7 +2660,7 @@ function App(){
   useEffect(()=>{
     if(!user||user.role!=='admin')return;
     if(!getSupabase()||!sessionStorage.getItem('crm_token'))return;
-    const snapshot=JSON.stringify([students,slots,professors,vehicles]);
+    const snapshot=JSON.stringify([students,slots,professors,vehicles,examDays]);
     if(suppressPush.current){
       // Este cambio vino del pull de la nube: registrar como base, no re-subir
       suppressPush.current=false;
@@ -2675,7 +2680,7 @@ function App(){
       }
     },1500);
     return()=>clearTimeout(instantTimer.current);
-  },[students,slots,professors,vehicles,user]);
+  },[students,slots,professors,vehicles,examDays,user]);
 
   // ── Wrapper setSlots que también envía al bot ────────────
   const setSlotsAndSync=async(updater)=>{
