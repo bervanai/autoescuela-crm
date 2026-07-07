@@ -43,13 +43,33 @@ El CRM ya está desplegado en GitHub Pages automáticamente.
    - Color principal
    - **Supabase URL** (del paso 1)
    - **Supabase Anon Key** (del paso 1)
+   - **School ID** (del paso 1)
    - Pulsar **"Probar conexión"** → debe aparecer ✅
-4. Pulsar **"Sincronizar con Supabase"** para subir los datos existentes
-5. Cambiar contraseñas en la sección de contraseñas
+4. **Cerrar sesión y volver a entrar** (admin / `1234`) — al haber Supabase
+   configurado, el login ya valida contra la nube y abre una sesión de 12h
+5. Pulsar **"Subir a Supabase"** para la primera subida de datos
+6. Cambiar la contraseña del admin en la sección de contraseñas
+
+### Cómo funciona la sincronización
+
+- **Login**: valida contra `app_users` en Supabase (hash bcrypt). Devuelve un
+  token de sesión de 12 horas guardado en el navegador.
+- **Auto-sync**: con sesión de admin activa, el CRM sube todos los datos a
+  Supabase cada 60 segundos (indicador "Nube · HH:MM" en el sidebar).
+- **Disponibilidad**: al pulsar "Guardar cambios" se sube al instante — el bot
+  la lee de Supabase para ofrecer huecos a los alumnos.
+- **Cargar desde Supabase**: restaura todos los datos de la nube en cualquier
+  ordenador (Configuración → "Cargar desde Supabase").
+- Las tablas tienen RLS y **no** son accesibles directamente con el anon key:
+  todo pasa por funciones RPC que validan el token de sesión.
 
 ---
 
 ## Paso 3 — Bot en Railway
+
+> El CLI de Railway ya está instalado en este Mac (`railway 5.23.3`, via npm).
+> Falta hacer `railway login` (pide navegador). Con la sesión iniciada, Claude
+> puede crear el proyecto, las variables y el deploy automáticamente.
 
 1. Crear cuenta en [railway.app](https://railway.app)
 2. **New Project → Deploy from GitHub repo** → seleccionar `autoescuela-crm`
