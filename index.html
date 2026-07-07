@@ -1810,23 +1810,57 @@ function Disponibilidad({user,professors,slots,setSlots}){
   }
 
   const [cloudErr,setCloudErr]=useState('');
+
+  // ── Push instantáneo: cada cambio de disponibilidad/bloqueo sube solo (~1.5s) ──
+  const cloudTimer=useRef(null);
+  const firstRun=useRef(true);
+  function buildCloudRows(){
+    // Admin sube todos los profesores; profesor solo lo suyo (el servidor lo fuerza igualmente)
+    const profIds=isAdmin?Object.keys(avail):[viewProf];
+    const availRows=[];
+    profIds.forEach(pid=>{
+      Object.entries(avail[pid]||{}).forEach(([dk,hours])=>{
+        if(['lun','mar','mie','jue','vie','sab'].includes(dk))
+          availRows.push({prof_id:pid,day_key:dk,hours:hours||[]});
+      });
+    });
+    const blockedRows=Object.values(blocked)
+      .filter(b=>b&&b.profId&&b.date&&b.hour&&(isAdmin||b.profId===viewProf))
+      .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
+    return {availRows,blockedRows};
+  }
+  useEffect(()=>{
+    if(firstRun.current){firstRun.current=false;return;}
+    const sb=getSupabase();
+    const token=sessionStorage.getItem('crm_token');
+    if(!sb||!token)return;
+    clearTimeout(cloudTimer.current);
+    cloudTimer.current=setTimeout(async()=>{
+      const {availRows,blockedRows}=buildCloudRows();
+      try{
+        const {error}=await sb.rpc('crm_save_data',{
+          p_token:token,p_availability:availRows,p_blocked:blockedRows,
+        });
+        if(error)throw error;
+        setCloudErr('');
+      }catch(e){
+        setCloudErr('No se pudo subir a la nube: '+(e.message||'error'));
+      }
+    },1500);
+    return()=>clearTimeout(cloudTimer.current);
+  },[avail,blocked]);
+
   async function handleSave(){
     save('crm_avail_v1',avail);
     save('crm_blocked_v1',blocked);
     setSaved(true);setCloudErr('');
     setTimeout(()=>setSaved(false),2500);
-    // Empujar a Supabase (el bot lee la disponibilidad desde allí)
+    // Empujar a Supabase inmediatamente (el bot lee la disponibilidad desde allí)
     const sb=getSupabase();
     const token=sessionStorage.getItem('crm_token');
     if(sb&&token){
-      const availRows=[];
-      Object.entries(avail[viewProf]||{}).forEach(([dk,hours])=>{
-        if(['lun','mar','mie','jue','vie','sab'].includes(dk))
-          availRows.push({prof_id:viewProf,day_key:dk,hours:hours||[]});
-      });
-      const blockedRows=Object.values(blocked)
-        .filter(b=>b&&b.profId===viewProf&&b.date&&b.hour)
-        .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
+      clearTimeout(cloudTimer.current); // cancelar el push pendiente: este lo cubre
+      const {availRows,blockedRows}=buildCloudRows();
       try{
         const {error}=await sb.rpc('crm_save_data',{
           p_token:token,
