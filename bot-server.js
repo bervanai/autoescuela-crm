@@ -47,16 +47,14 @@ app.use((req, res, next) => {
 const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN;
 const SANDBOX_NUM = process.env.TWILIO_SANDBOX_NUM || 'whatsapp:+14155238886';
-const client      = twilio(ACCOUNT_SID, AUTH_TOKEN);
+// Sin credenciales el bot arranca igualmente (API REST disponible), solo
+// que no puede enviar WhatsApp — evita crash-loop en Railway antes de
+// configurar las variables secretas.
+const client = (ACCOUNT_SID && AUTH_TOKEN) ? twilio(ACCOUNT_SID, AUTH_TOKEN) : null;
+if (!client) console.log('⚠️  Sin credenciales Twilio → envío de WhatsApp desactivado');
 
 // ── Notificaciones ────────────────────────────────────────
 const NOTIFY_ADMIN = process.env.NOTIFY_ADMIN || '+34644299702';
-const NOTIFY = {
-  admin:       NOTIFY_ADMIN,
-  prof_inaki:  NOTIFY_ADMIN,
-  prof_carlos: NOTIFY_ADMIN,
-  prof_maria:  NOTIFY_ADMIN,
-};
 
 // ── Archivos JSON de fallback ─────────────────────────────
 const STUDENTS_FILE  = path.join(__dirname, 'crm_students.json');
@@ -541,6 +539,10 @@ function parseBookingText(text) {
 // ════════════════════════════════════════════════════════════
 
 async function sendWA(to, body) {
+  if (!client) {
+    console.log(`🚫 (Twilio no configurado) mensaje NO enviado a ${to}: ${body.substring(0, 60).replace(/\n/g, ' ')}`);
+    return;
+  }
   try {
     await client.messages.create({ from: SANDBOX_NUM, to: `whatsapp:${to}`, body });
     console.log(`📤 → ${to}: ${body.substring(0, 80).replace(/\n/g, ' ')}`);
@@ -550,7 +552,17 @@ async function sendWA(to, body) {
 }
 
 async function notifyProf(profId, body) {
-  await sendWA(NOTIFY[profId] || NOTIFY.admin, body);
+  // Buscar el teléfono real del profesor; si no tiene, avisar al admin
+  let phone = null;
+  if (USE_SUPABASE && profId) {
+    const { data } = await supabase
+      .from('professors')
+      .select('phone')
+      .eq('id', profId)
+      .single();
+    phone = data?.phone || null;
+  }
+  await sendWA(phone || NOTIFY_ADMIN, body);
 }
 
 // ════════════════════════════════════════════════════════════
