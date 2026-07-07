@@ -66,8 +66,23 @@ const load=(k,fb)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f
 const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
 // ─── Config de la autoescuela ─────────────────────────────────────────────────
-const DEFAULT_SCHOOL={name:'AutoEscuela',color:'#fd761a',botUrl:'https://autoescuela-bot-production.up.railway.app',schoolId:'',setupDone:false};
-const loadSchool=()=>load('crm_school_v1',DEFAULT_SCHOOL);
+const DEFAULT_SCHOOL={
+  name:'AutoEscuela',color:'#fd761a',
+  botUrl:'https://autoescuela-bot-production.up.railway.app',
+  supabaseUrl:'https://vxpavrtjgvrxqimsemku.supabase.co',
+  // anon key: pública por diseño (el acceso real lo controlan RLS + sesiones)
+  supabaseAnonKey:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ4cGF2cnRqZ3ZyeHFpbXNlbWt1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMzNDcyNTQsImV4cCI6MjA5ODkyMzI1NH0.zV1G4zZ6an__M45ZDuUAw8kSCxo9_NYV807uD1PAURA',
+  schoolId:'4a443e53-2cfd-45df-b360-616d7e309687',
+  setupDone:false,
+};
+const loadSchool=()=>{
+  // Mezclar con los defaults: configuraciones antiguas ganan los campos nuevos
+  const stored=load('crm_school_v1',{})||{};
+  const merged={...DEFAULT_SCHOOL,...stored};
+  // Migrar botUrl antiguo de desarrollo local al de producción
+  if(merged.botUrl==='http://localhost:3002')merged.botUrl=DEFAULT_SCHOOL.botUrl;
+  return merged;
+};
 const saveSchool=v=>save('crm_school_v1',v);
 
 // ─── Supabase helpers ─────────────────────────────────────────────────────────
