@@ -2497,61 +2497,51 @@ function App(){
       throw new Error(error.message);
     }
     const d=data||{};
-    if(d.professors?.length){
-      setProfessors(d.professors.map(p=>({
-        id:p.id,name:p.name,color:p.color||'#1e3a5f',
-        phone:p.phone||'',email:p.email||'',
-        avatar:(p.name||'?').slice(0,2).toUpperCase(),active:p.active!==false,
-      })));
-    }
-    if(d.students?.length){
-      setStudents(d.students.map(s=>({
-        id:s.id,name:s.name,phone:s.phone||'',profId:s.prof_id,
-        license:s.license||'B',vehicleType:s.vehicle_type||'manual',
-        numClases:s.num_clases||0,bono:s.bono||'Sin bono',
-        tasasPagadas:!!s.tasas_pagadas,active:s.active!==false,
-        botActive:s.bot_active!==false,
-        examDate:s.exam_date||'',examResult:s.exam_result||null,
-      })));
-    }
-    if(d.vehicles?.length){
-      setVehicles(d.vehicles.map(v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'})));
-    }
-    if(d.slots?.length){
-      const next={};
-      d.slots.forEach(s=>{
-        next[s.id]={
-          id:s.id,
-          date:String(s.date).slice(0,10),
-          time:String(s.time).slice(0,5),
-          profId:s.prof_id,studentId:s.student_id||null,
-          vehicleId:s.vehicle_id||null,
-          slotType:s.slot_type||'practica',
-          duration:s.duration||45,
-          confirmed:s.status==='confirmed',
-          cancelled:s.status==='cancelled',
-        };
-      });
-      setSlots(next);
-    }
+    // Espejo exacto de la nube: las colecciones vacías también reemplazan
+    // (el usuario ya confirmó que quiere sobrescribir lo local)
+    setProfessors((d.professors||[]).map(p=>({
+      id:p.id,name:p.name,color:p.color||'#1e3a5f',
+      phone:p.phone||'',email:p.email||'',
+      avatar:(p.name||'?').slice(0,2).toUpperCase(),active:p.active!==false,
+    })));
+    setStudents((d.students||[]).map(s=>({
+      id:s.id,name:s.name,phone:s.phone||'',profId:s.prof_id,
+      license:s.license||'B',vehicleType:s.vehicle_type||'manual',
+      numClases:s.num_clases||0,bono:s.bono||'Sin bono',
+      tasasPagadas:!!s.tasas_pagadas,active:s.active!==false,
+      botActive:s.bot_active!==false,
+      examDate:s.exam_date||'',examResult:s.exam_result||null,
+    })));
+    setVehicles((d.vehicles||[]).map(v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'})));
+    const nextSlots={};
+    (d.slots||[]).forEach(s=>{
+      nextSlots[s.id]={
+        id:s.id,
+        date:String(s.date).slice(0,10),
+        time:String(s.time).slice(0,5),
+        profId:s.prof_id,studentId:s.student_id||null,
+        vehicleId:s.vehicle_id||null,
+        slotType:s.slot_type||'practica',
+        duration:s.duration||45,
+        confirmed:s.status==='confirmed',
+        cancelled:s.status==='cancelled',
+      };
+    });
+    setSlots(nextSlots);
     // Disponibilidad y bloqueos → localStorage (los lee el componente Disponibilidad)
-    if(d.availability?.length){
-      const avail={};
-      d.availability.forEach(a=>{
-        if(!avail[a.prof_id])avail[a.prof_id]={};
-        avail[a.prof_id][a.day_key]=(a.hours||[]).map(h=>String(h).slice(0,5));
-      });
-      save('crm_avail_v1',avail);
-    }
-    if(d.blocked?.length){
-      const blocked={};
-      d.blocked.forEach(b=>{
-        const hour=String(b.hour).slice(0,5);
-        const date=String(b.date).slice(0,10);
-        blocked[`${b.prof_id}_${date}_${hour}`]={profId:b.prof_id,date,hour,blockedAt:Date.now()};
-      });
-      save('crm_blocked_v1',blocked);
-    }
+    const availMap={};
+    (d.availability||[]).forEach(a=>{
+      if(!availMap[a.prof_id])availMap[a.prof_id]={};
+      availMap[a.prof_id][a.day_key]=(a.hours||[]).map(h=>String(h).slice(0,5));
+    });
+    save('crm_avail_v1',availMap);
+    const blockedMap={};
+    (d.blocked||[]).forEach(b=>{
+      const hour=String(b.hour).slice(0,5);
+      const date=String(b.date).slice(0,10);
+      blockedMap[`${b.prof_id}_${date}_${hour}`]={profId:b.prof_id,date,hour,blockedAt:Date.now()};
+    });
+    save('crm_blocked_v1',blockedMap);
     return {
       profesores:d.professors?.length||0,
       alumnos:d.students?.length||0,
