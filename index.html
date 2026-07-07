@@ -2400,9 +2400,11 @@ function App(){
   const [page,setPage]=useState('dashboard');
   const [professors,setProfessors]=useState(()=>load('crm_professors_v3',PROFESSORS));
   const [vehicles,setVehicles]=useState(()=>load('crm_vehicles_v3',VEHICLES));
-  const [students,setStudents]=useState(()=>load('crm_students_v3',null)||seedStudents());
+  // Con Supabase configurado, la nube es la fuente de verdad: no sembrar demo
+  const [students,setStudents]=useState(()=>load('crm_students_v3',null)||(getSupabase()?[]:seedStudents()));
   const [slots,setSlots]=useState(()=>{
     const sv=load('crm_slots_v4',null);if(sv)return sv;
+    if(getSupabase())return {};
     const st=load('crm_students_v3',null)||seedStudents();return seedSlots(st);
   });
   const [examDays,setExamDays]=useState(()=>load('crm_exam_days_v3',[]));
@@ -2605,14 +2607,33 @@ function App(){
     return()=>clearInterval(iv);
   },[user,botUrl]);
 
-  // ── Auto-sync con Supabase cada 60s (solo admin con sesión válida) ──
+  // ── Sincronización bidireccional con Supabase ─────────────────────
+  // La nube es la fuente de verdad: al entrar y cada 15s se descarga el
+  // estado real (pull). Los cambios locales se suben al momento (push,
+  // ver efecto de abajo). Un pull nunca pisa una edición hecha en los
+  // últimos 8s (le da tiempo al push a completarse primero).
   const [cloudStatus,setCloudStatus]=useState('off'); // off | ok | error
   const [lastCloudSync,setLastCloudSync]=useState(null);
+  const suppressPush=useRef(false);   // el cambio viene de la nube: no re-subirlo
+  const lastLocalChange=useRef(0);    // timestamp de la última edición local
   useEffect(()=>{
-    if(!user||user.role!=='admin')return;
+    if(!user)return;
     if(!getSupabase()||!sessionStorage.getItem('crm_token')){setCloudStatus('off');return;}
     let cancelled=false;
+    const pull=async()=>{
+      if(Date.now()-lastLocalChange.current<8000)return; // edición reciente: no pisar
+      try{
+        suppressPush.current=true;
+        await loadFromSupabase();
+        if(!cancelled){setCloudStatus('ok');setLastCloudSync(new Date());}
+      }catch(e){
+        suppressPush.current=false;
+        if(!cancelled)setCloudStatus('error');
+      }
+    };
     const push=async()=>{
+      if(user.role!=='admin')return;
+      if(Date.now()-lastLocalChange.current<3000)return; // el push instantáneo ya va en camino
       try{
         await syncToSupabase();
         if(!cancelled){setCloudStatus('ok');setLastCloudSync(new Date());}
@@ -2620,19 +2641,27 @@ function App(){
         if(!cancelled)setCloudStatus('error');
       }
     };
-    const t=setTimeout(push,5000);       // primer push a los 5s de entrar
-    const iv=setInterval(push,60000);    // red de seguridad: cada minuto
-    return()=>{cancelled=true;clearTimeout(t);clearInterval(iv);};
+    pull();                              // al entrar: descargar el estado real
+    const iv=setInterval(pull,15000);    // espejo de la nube cada 15s
+    const iv2=setInterval(push,60000);   // red de seguridad de subida
+    return()=>{cancelled=true;clearInterval(iv);clearInterval(iv2);};
   },[user,schoolConfig]);
 
-  // ── Push instantáneo: cualquier cambio se sube a Supabase en ~1.5s ──
+  // ── Push instantáneo: cualquier cambio LOCAL se sube a Supabase en ~1.5s ──
   const instantTimer=useRef(null);
   const lastPushed=useRef('');
   useEffect(()=>{
     if(!user||user.role!=='admin')return;
     if(!getSupabase()||!sessionStorage.getItem('crm_token'))return;
     const snapshot=JSON.stringify([students,slots,professors,vehicles]);
+    if(suppressPush.current){
+      // Este cambio vino del pull de la nube: registrar como base, no re-subir
+      suppressPush.current=false;
+      lastPushed.current=snapshot;
+      return;
+    }
     if(snapshot===lastPushed.current)return; // nada cambió de verdad (p.ej. sync del bot)
+    lastLocalChange.current=Date.now();
     clearTimeout(instantTimer.current);
     instantTimer.current=setTimeout(async()=>{
       try{
