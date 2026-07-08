@@ -1385,53 +1385,138 @@ function BotSim({students,slots,professors}){
   const [stuId,setStuId]=useState(allStudents[0]?.id||'');
   const [msgs,setMsgs]=useState([]);
   const [input,setInput]=useState('');
-  const [phase,setPhase]=useState('idle'); // idle | asked | done
-  const [selectedSlot,setSelectedSlot]=useState(null);
+  const [phase,setPhase]=useState('idle'); // idle | activo | fin
+  const simRef=useRef({free:[],idx:0,booked:[],cancelMode:false});
   const ref=useRef();
 
   const stu=students.find(s=>s.id===stuId);
   const prof=professors.find(p=>p.id===stu?.profId);
-  const stuSlots=Object.values(slots).filter(s=>s.studentId===stuId&&!s.confirmed)
-    .sort((a,b)=>a.date+a.time>b.date+b.time?1:-1).slice(0,1);
+  const school=loadSchool();
 
   useEffect(()=>{ref.current&&(ref.current.scrollTop=ref.current.scrollHeight);},[msgs]);
 
-  const resetSim=()=>{setMsgs([]);setPhase('idle');setSelectedSlot(null);setInput('');};
+  const resetSim=()=>{setMsgs([]);setPhase('idle');setInput('');simRef.current={free:[],idx:0,booked:[],cancelMode:false};};
+
+  // Huecos libres de la semana que viene (mismo cálculo que el bot real)
+  const computeFree=()=>{
+    const profId=stu?.profId;
+    const avail=load('crm_avail_v1',{})||{};
+    const dayKeys=['lun','mar','mie','jue','vie','sab'];
+    const DL=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+    const now=new Date();
+    const mon=new Date(now);mon.setDate(now.getDate()+(now.getDay()===0?1:8-now.getDay()));
+    const taken=new Set(Object.values(slots).filter(s=>s.profId===profId&&!s.cancelled).map(s=>`${s.date}_${s.time}`));
+    const free=[];
+    for(let i=0;i<6;i++){
+      const d=new Date(mon);d.setDate(mon.getDate()+i);
+      const pad=n=>String(n).padStart(2,'0');
+      const ds=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+      const hours=(avail[profId]?.[dayKeys[i]]?.length?avail[profId][dayKeys[i]]
+        :['09:00','10:00','11:00','12:00','16:00','17:00','18:00','19:00']).slice().sort();
+      hours.forEach(h=>{if(!taken.has(`${ds}_${h}`))free.push({date:ds,time:h,dayName:DL[d.getDay()]});});
+    }
+    return free;
+  };
+  const MESES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const fmt=s=>`${s.dayName} ${parseInt(s.date.slice(8))} de ${MESES[parseInt(s.date.slice(5,7))-1]} a las ${s.time}h`;
+  const propose=s=>`📅 *${fmt(s)}*\n\n¿Te viene bien? Responde *SÍ*, *NO*, un número (ej: *3*), o pregúntame ("¿el martes a las 10?")`;
 
   const startBot=()=>{
-    if(!stu||stuSlots.length===0){
-      setMsgs([{from:'bot',text:'Este alumno no tiene clases pendientes de confirmar esta semana.'}]);
-      return;
-    }
-    const slot=stuSlots[0];
-    setSelectedSlot(slot);
-    const msg=`Hola ${stu.name.split(' ')[0]}! 👋\n\nSoy el asistente de ${prof?.name||'tu profesor'} de la autoescuela.\n\nTienes clase de conducir programada:\n📅 ${slot.date}\n🕐 ${slot.time}h\n🚗 Con ${prof?.name}\n\n¿Confirmas tu asistencia? Responde:\n✅ *SÍ* — Confirmo\n❌ *NO* — No puedo ir`;
-    setMsgs([{from:'bot',text:msg}]);
-    setPhase('asked');
+    if(!stu){setMsgs([{from:'bot',text:'Selecciona un alumno.'}]);return;}
+    const free=computeFree();
+    simRef.current={free,idx:0,booked:[],cancelMode:false};
+    if(!free.length){setMsgs([{from:'bot',text:'No hay huecos disponibles la semana que viene. Contacta con la autoescuela.'}]);return;}
+    setMsgs([{from:'bot',text:
+      `Hola ${stu.name.split(' ')[0]} 👋 Soy el asistente de *${school.name}*.\n\n`+
+      `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n${propose(free[0])}\n\n⚠️ El plazo cierra el jueves.`}]);
+    setPhase('activo');
   };
 
-  const sendMsg=()=>{
-    if(!input.trim()||phase==='idle')return;
-    const userMsg=input.trim();
+  // Réplica de la lógica del bot real (visual, no modifica datos)
+  const botReply=(text)=>{
+    const S=simRef.current;
+    const t=text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+    const resumen=()=>S.booked.map(b=>`• ${fmt(b)}`).join('\n');
+
+    if(/listo|gracias|nada mas|fin|suficiente/.test(t)){
+      setPhase('fin');
+      return S.booked.length
+        ?`¡Perfecto ${stu.name.split(' ')[0]}!\n\n📋 *Tus clases de la semana:*\n${resumen()}\n\nTe recordaré cada una 48h antes. 🚗`
+        :`¡Perfecto! Escríbeme cuando quieras reservar. 👋`;
+    }
+    if(S.cancelMode){
+      const n=parseInt(t);
+      S.cancelMode=false;
+      if(n>=1&&n<=S.booked.length){
+        const rm=S.booked.splice(n-1,1)[0];
+        S.free.push(rm);S.free.sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
+        return `❌ Clase cancelada: *${fmt(rm)}*\n\nHe avisado a ${prof?.name||'tu profesor'}. 👋`;
+      }
+    }
+    if(/cancelar|anula/.test(t)){
+      if(!S.booked.length)return 'No tienes clases reservadas que cancelar 👍';
+      S.cancelMode=true;
+      return `Estas son tus clases:\n\n${S.booked.map((b,i)=>`*${i+1}.* ${fmt(b)}`).join('\n')}\n\n¿Cuál cancelo? Responde con el número, o *listo* para salir.`;
+    }
+    if(/clases tengo|mis clases|ver clases/.test(t)){
+      return S.booked.length?`📋 *Tus próximas clases:*\n${resumen()}\n\nSi quieres anular alguna, responde *cancelar*.`:'No tienes clases reservadas todavía.';
+    }
+    const multi=t.match(/^([1-6])$/)||t.match(/\b([1-6])\s*clases?\b/);
+    if(multi){
+      const n=parseInt(multi[1]);
+      const byDate={};S.free.forEach(s=>{(byDate[s.date]=byDate[s.date]||[]).push(s);});
+      const dates=Object.keys(byDate).sort();
+      const picked=[];
+      for(let r=0;picked.length<n&&r<8;r++){
+        let added=false;
+        for(const d of dates){if(picked.length>=n)break;if(byDate[d][r]){picked.push(byDate[d][r]);added=true;}}
+        if(!added)break;
+      }
+      picked.sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
+      picked.forEach(p3=>{S.booked.push(p3);S.free=S.free.filter(f=>f!==p3);});
+      S.idx=0;
+      return `✅ ¡Hechas! He reservado tus ${picked.length} clases:\n\n📋 *Tus clases de la semana:*\n${resumen()}\n\n¿Quieres alguna más? *SÍ*, otro número, o *listo*.`;
+    }
+    if(/^(si$|si |vale|ok|claro|perfecto|confirmo)/.test(t)){
+      const cur=S.free[S.idx];
+      if(!cur)return 'No quedan huecos libres esta semana. 📞';
+      S.booked.push(cur);S.free=S.free.filter(f=>f!==cur);S.idx=0;
+      return `✅ ¡Reservada!\n\n📋 *Tus clases de la semana:*\n${resumen()}\n\n¿Quieres otra? *SÍ* para el siguiente hueco, un número, o *listo* para terminar.`;
+    }
+    if(/^no/.test(t)){
+      S.idx=(S.idx+1)%(S.free.length||1);
+      const nx=S.free[S.idx];
+      if(!nx)return 'No quedan más huecos disponibles. 📞';
+      return `De acuerdo, te propongo:\n\n${propose(nx)}`;
+    }
+    // Pregunta por día/hora
+    const dias={lunes:1,martes:2,miercoles:3,jueves:4,viernes:5,sabado:6};
+    let dow=null;for(const[k,v]of Object.entries(dias)){if(t.includes(k)){dow=v;break;}}
+    const hm=t.match(/(\d{1,2}):(\d{2})/)||t.match(/las\s+(\d{1,2})/)||(dow?t.match(/\b(\d{1,2})\b/):null);
+    const hour=hm?String(hm[1]).padStart(2,'0')+':'+(hm[2]||'00'):null;
+    if(dow||hour){
+      const match=S.free.find(s=>{
+        const d=new Date(s.date+'T12:00:00').getDay();
+        return (!dow||d===dow)&&(!hour||s.time===hour);
+      });
+      if(match){
+        S.free=[match,...S.free.filter(f=>f!==match)];S.idx=0;
+        return `✅ ¡Está libre!\n\n${propose(match)}`;
+      }
+      const cur=S.free[S.idx]||S.free[0];
+      return cur?`❌ Ese hueco *no está disponible*.\n\nEl siguiente libre es:\n${propose(cur)}`:'No quedan huecos esta semana. 📞';
+    }
+    return `Responde *SÍ*, *NO*, un número (ej: *3*), *cancelar*, *"¿qué clases tengo?"*, o pregunta por una hora ("¿el martes a las 10?") 😊`;
+  };
+
+  const send=(text)=>{
+    const userMsg=(text||'').trim();
+    if(!userMsg||phase!=='activo')return;
     setMsgs(m=>[...m,{from:'user',text:userMsg}]);
     setInput('');
-    const lower=userMsg.toLowerCase();
-    const isYes=/^(si|sí|yes|confirmo|ok|claro|vale|de acuerdo|1|✅)/i.test(lower);
-    const isNo=/^(no|cancel|no puedo|no voy|2|❌)/i.test(lower);
-    setTimeout(()=>{
-      if(phase==='asked'){
-        if(isYes){
-          setMsgs(m=>[...m,{from:'bot',text:`✅ ¡Perfecto, ${stu.name.split(' ')[0]}! Tu clase del ${selectedSlot?.date} a las ${selectedSlot?.time}h queda confirmada. Te mandamos un recordatorio 48h antes. ¡Hasta pronto! 👍`}]);
-          setPhase('done');
-        } else if(isNo){
-          setMsgs(m=>[...m,{from:'bot',text:`❌ Entendido. He cancelado tu clase del ${selectedSlot?.date} a las ${selectedSlot?.time}h.\n\n📢 He notificado a ${prof?.name} y al administrador.\n\n¿Quieres reservar otro día? Escríbenos cuando puedas.`}]);
-          setPhase('done');
-        } else {
-          setMsgs(m=>[...m,{from:'bot',text:`No he entendido tu respuesta 😅\nPor favor responde solo:\n✅ *SÍ* para confirmar\n❌ *NO* para cancelar`}]);
-        }
-      }
-    },800);
+    setTimeout(()=>{setMsgs(m=>[...m,{from:'bot',text:botReply(userMsg)}]);},700);
   };
+  const sendMsg=()=>send(input);
 
   return(
     <div style={{display:'flex',flexDirection:'column',height:'100%',gap:16}}>
@@ -1478,25 +1563,35 @@ function BotSim({students,slots,professors}){
               </div>
             ))}
           </div>
-          {phase==='asked'&&(
+          {phase==='activo'&&(
             <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
               <input className={inp} value={input} onChange={e=>setInput(e.target.value)}
                 onKeyDown={e=>e.key==='Enter'&&sendMsg()}
-                placeholder='Escribe "SÍ" o "NO"…' style={{flex:1}}/>
+                placeholder='Escribe SÍ, NO, 3, cancelar, "¿el martes a las 10?"…' style={{flex:1}}/>
               <button onClick={sendMsg} className={btnO}><Icon name="send" size={17}/></button>
             </div>
           )}
-          {phase==='asked'&&(
-            <div style={{padding:'8px 12px',display:'flex',gap:6,borderTop:'1px solid #f1f5f9'}}>
-              <button onClick={()=>{setInput('SÍ');setTimeout(sendMsg,10)}}
-                style={{flex:1,padding:'8px',borderRadius:8,border:'1px solid #86efac',
+          {phase==='activo'&&(
+            <div style={{padding:'8px 12px',display:'flex',gap:6,borderTop:'1px solid #f1f5f9',flexWrap:'wrap'}}>
+              <button onClick={()=>send('SÍ')}
+                style={{flex:1,minWidth:70,padding:'8px',borderRadius:8,border:'1px solid #86efac',
                   background:'#dcfce7',color:'#166534',fontWeight:700,cursor:'pointer',fontSize:13}}>
-                ✅ SÍ, confirmo
+                ✅ SÍ
               </button>
-              <button onClick={()=>{setInput('NO');setTimeout(sendMsg,10)}}
-                style={{flex:1,padding:'8px',borderRadius:8,border:'1px solid #fca5a5',
+              <button onClick={()=>send('NO')}
+                style={{flex:1,minWidth:70,padding:'8px',borderRadius:8,border:'1px solid #fca5a5',
                   background:'#fee2e2',color:'#991b1b',fontWeight:700,cursor:'pointer',fontSize:13}}>
-                ❌ NO, cancelo
+                ❌ NO
+              </button>
+              <button onClick={()=>send('3')}
+                style={{flex:1,minWidth:70,padding:'8px',borderRadius:8,border:'1px solid #93c5fd',
+                  background:'#dbeafe',color:'#1e40af',fontWeight:700,cursor:'pointer',fontSize:13}}>
+                🗓 3 clases
+              </button>
+              <button onClick={()=>send('listo')}
+                style={{flex:1,minWidth:70,padding:'8px',borderRadius:8,border:'1px solid #e2e8f0',
+                  background:'#f8fafc',color:'#475569',fontWeight:700,cursor:'pointer',fontSize:13}}>
+                🏁 Listo
               </button>
             </div>
           )}
@@ -1506,11 +1601,12 @@ function BotSim({students,slots,professors}){
           <Card style={{padding:16}}>
             <div style={{fontWeight:600,color:'#091426',fontSize:13,marginBottom:12}}>Flujo automático</div>
             {[
-              {day:'Mar–Jue',txt:'Bot envía mensaje a todos los alumnos con clases la semana siguiente',icon:'schedule',c:'#1e3a5f'},
-              {day:'Alumno SÍ',txt:'Clase se marca como confirmada en el calendario',icon:'check_circle',c:'#0e6856'},
-              {day:'Alumno NO',txt:'Clase se elimina y se notifica a admin y profesor',icon:'cancel',c:'#b91c1c'},
-              {day:'Sin resp.',txt:'Clase queda pendiente, no se cancela',icon:'help',c:'#b45309'},
-              {day:'48h antes',txt:'Recordatorio automático enviado al alumno',icon:'notifications',c:'#7c2d8c'},
+              {day:'Martes 9:00',txt:'El bot escribe a todos los alumnos activos para organizar la semana siguiente',icon:'schedule',c:'#1e3a5f'},
+              {day:'Mié–Jue 9:00',txt:'Persigue solo a quienes aún no han reservado (cero spam)',icon:'notification_important',c:'#b45309'},
+              {day:'SÍ / número',txt:'Reserva 1 clase o varias de golpe ("3" = 3 clases repartidas)',icon:'check_circle',c:'#0e6856'},
+              {day:'Preguntas',txt:'"¿El martes a las 10 está libre?" · "¿qué clases tengo?" · "cancelar"',icon:'forum',c:'#7c2d8c'},
+              {day:'Jue 23:59',txt:'Cierra el plazo de reservas de la semana',icon:'lock_clock',c:'#b91c1c'},
+              {day:'48h antes',txt:'Recordatorio automático de cada clase',icon:'notifications',c:'#0369a1'},
             ].map(({day,txt,icon,c})=>(
               <div key={day} style={{display:'flex',gap:8,marginBottom:10,alignItems:'flex-start'}}>
                 <Icon name={icon} size={16} style={{color:c,flexShrink:0,marginTop:1}}/>
@@ -1532,7 +1628,7 @@ function BotSim({students,slots,professors}){
                     <div style={{color:'#94a3b8'}}>{prof?.name}</div>
                   </div>
                 </div>
-                <div>Clases pendientes de confirmar: <strong>{stuSlots.length}</strong></div>
+                <div>Reservadas en esta simulación: <strong>{simRef.current.booked.length}</strong></div>
                 <div>Teléfono: <strong>{stu.phone}</strong></div>
               </div>
             ):<div style={{fontSize:12,color:'#94a3b8'}}>Selecciona un alumno</div>}
