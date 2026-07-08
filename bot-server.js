@@ -393,16 +393,21 @@ function denormalizeSlot(obj) {
 // HELPERS DE DISPONIBILIDAD
 // ════════════════════════════════════════════════════════════
 
-async function hoursForProfDay(profId, dowNum) {
-  const avail  = await loadAvailability();
+// Versiones síncronas sobre datos ya cargados (evitan una consulta
+// a Supabase por cada día/hora — el cuello de botella de velocidad)
+function hoursForProfDaySync(avail, profId, dowNum) {
   const dayKey = DAY_KEY_MAP[dowNum];
-  if (avail?.[profId]?.[dayKey]?.length) return avail[profId][dayKey];
-  return HOURS_DEFAULT;
+  const hours = avail?.[profId]?.[dayKey]?.length ? avail[profId][dayKey] : HOURS_DEFAULT;
+  return [...hours].sort(); // siempre en orden cronológico
+}
+
+function isBlockedSlotSync(blocked, profId, date, hour) {
+  return !!blocked[`${profId}_${date}_${hour}`];
 }
 
 async function isBlockedSlot(profId, date, hour) {
   const blocked = await loadBlocked();
-  return !!blocked[`${profId}_${date}_${hour}`];
+  return isBlockedSlotSync(blocked, profId, date, hour);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -473,8 +478,10 @@ function dateForDow(dow) {
 // ════════════════════════════════════════════════════════════
 
 async function nextFreeSlots(profId, count = 8, fromDate = null) {
-  const slots    = await loadSlots();
-  const examDays = await loadExamDays();
+  // Una sola ronda de consultas en paralelo (antes: una por día/hora → lento)
+  const [slots, examDays, avail, blocked] = await Promise.all([
+    loadSlots(), loadExamDays(), loadAvailability(), loadBlocked(),
+  ]);
   const start  = fromDate ? new Date(fromDate) : new Date();
   if (!fromDate) start.setDate(start.getDate() + 1);
   start.setHours(0, 0, 0, 0);
@@ -487,11 +494,10 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
     if (dow === 0) continue; // sin domingos
     const date  = dt.toISOString().split('T')[0];
     if (examDays.includes(date)) continue; // día de examen: sin clases
-    const avail = await hoursForProfDay(profId, dow);
 
-    for (const hour of avail) {
+    for (const hour of hoursForProfDaySync(avail, profId, dow)) {
       if (free.length >= count) break;
-      if (await isBlockedSlot(profId, date, hour)) continue;
+      if (isBlockedSlotSync(blocked, profId, date, hour)) continue;
       const taken = slots.some(
         s => (s.profId === profId || s.prof_id === profId)
           && String(s.date).substring(0, 10) === date
@@ -512,10 +518,11 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
 }
 
 async function isSlotFree(profId, date, time) {
-  const examDays = await loadExamDays();
+  const [slots, examDays, blocked] = await Promise.all([
+    loadSlots(), loadExamDays(), loadBlocked(),
+  ]);
   if (examDays.includes(String(date).substring(0, 10))) return false;
-  if (await isBlockedSlot(profId, date, time)) return false;
-  const slots = await loadSlots();
+  if (isBlockedSlotSync(blocked, profId, date, String(time).substring(0, 5))) return false;
   return !slots.some(
     s => (s.profId === profId || s.prof_id === profId)
       && String(s.date).substring(0, 10) === date
@@ -789,9 +796,10 @@ app.post('/bot', async (req, res) => {
     }
 
     const profId = st.profId ?? st.prof_id;
-    const free = await nextFreeSlots(profId, 6);
+    const nextMon = nextWeekMonday().toISOString().split('T')[0];
+    const free = await nextFreeSlots(profId, 8, nextMon);
     if (!free.length) {
-      await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles en los próximos días. Llama a la autoescuela.`);
+      await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
       res.send('<Response></Response>');
       return;
     }
@@ -799,12 +807,13 @@ app.post('/bot', async (req, res) => {
     const slot = free[0];
     const msg =
       `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-      `El próximo hueco disponible con tu profesor es:\n\n` +
+      `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
       `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
-      `¿Te viene bien? Responde *SÍ* para reservarlo o *NO* para ver otros huecos.`;
+      `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
+      `Puedes reservar todas las clases que quieras, una detrás de otra.`;
 
     await sendWA(from, msg);
-    pending[from] = makeSuggestState({ ...st, profId }, free);
+    pending[from] = makeSuggestState({ ...st, profId }, free, true);
     res.send('<Response></Response>');
     return;
   }
