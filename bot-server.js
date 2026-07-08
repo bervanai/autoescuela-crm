@@ -532,6 +532,28 @@ async function isSlotFree(profId, date, time) {
   );
 }
 
+// ── Próximas clases reservadas de un alumno (ordenadas) ──
+async function upcomingSlotsFor(studentId, max = 8) {
+  const slots = await loadSlots();
+  const now = Date.now();
+  return slots
+    .filter(s => {
+      const sid = s.studentId ?? s.student_id;
+      if (sid !== studentId || s.status === 'cancelled') return false;
+      const d = String(s.date).substring(0, 10);
+      const t = String(s.time).substring(0, 5);
+      return new Date(`${d}T${t}:00`).getTime() > now;
+    })
+    .sort((a, b) => (String(a.date) + a.time).localeCompare(String(b.date) + b.time))
+    .slice(0, max);
+}
+
+function slotLabel(s) {
+  const d = String(s.date).substring(0, 10);
+  const dow = new Date(d + 'T12:00:00').getDay();
+  return `${DAY_LABELS[dow]} ${formatDate(d)} — ${String(s.time).substring(0, 5)}h`;
+}
+
 // ════════════════════════════════════════════════════════════
 // NORMALIZADORES DE RESPUESTA WHATSAPP
 // ════════════════════════════════════════════════════════════
@@ -796,6 +818,49 @@ app.post('/bot', async (req, res) => {
     }
 
     const profId = st.profId ?? st.prof_id;
+    const t0 = norm(body);
+
+    // ── "¿qué clases tengo?": consultar reservas ──
+    if (/\bclases?\b/.test(t0) && /(mis|ver|que|cuando|tengo)/.test(t0) && !/cancel|anula/.test(t0)) {
+      const mine = await upcomingSlotsFor(st.id);
+      if (!mine.length) {
+        await sendWA(from, `Hola ${st.name} 👋 No tienes clases reservadas ahora mismo. Escríbeme *hola* y organizamos tu semana.`);
+      } else {
+        await sendWA(from,
+          `📋 *Tus próximas clases:*\n` +
+          mine.map(s => `• ${slotLabel(s)}`).join('\n') +
+          `\n\nSi quieres anular alguna, responde *cancelar*.`
+        );
+      }
+      res.send('<Response></Response>');
+      return;
+    }
+
+    // ── "cancelar": anular una clase reservada ──
+    if (/cancel|anula/.test(t0)) {
+      const mine = await upcomingSlotsFor(st.id);
+      if (!mine.length) {
+        await sendWA(from, `No tienes clases reservadas que cancelar 👍`);
+        res.send('<Response></Response>');
+        return;
+      }
+      pending[from] = {
+        type:        'cancel',
+        studentId:   st.id,
+        studentName: st.name,
+        profId:      profId,
+        slots:       mine,
+        expires:     Date.now() + 3600000, // 1h para decidir
+      };
+      await sendWA(from,
+        `Estas son tus próximas clases:\n\n` +
+        mine.map((s, i) => `*${i + 1}.* ${slotLabel(s)}`).join('\n') +
+        `\n\n¿Cuál quieres cancelar? Responde con el número, o *listo* para salir.`
+      );
+      res.send('<Response></Response>');
+      return;
+    }
+
     const nextMon = nextWeekMonday().toISOString().split('T')[0];
     const free = await nextFreeSlots(profId, 8, nextMon);
     if (!free.length) {
@@ -822,6 +887,30 @@ app.post('/bot', async (req, res) => {
   if (Date.now() > state.expires) {
     delete pending[from];
     await sendWA(from, `El plazo de reserva ha cerrado. Te contactaremos el próximo martes. ¡Hasta pronto! 👋`);
+    res.send('<Response></Response>');
+    return;
+  }
+
+  // ── FLUJO: Cancelación ────────────────────────────────
+  if (state.type === 'cancel') {
+    if (isDone(body) || isNo(body)) {
+      delete pending[from];
+      await sendWA(from, `De acuerdo, no cancelo nada. ¡Hasta pronto! 👋`);
+      res.send('<Response></Response>');
+      return;
+    }
+    const n = parseInt(norm(body), 10);
+    if (n >= 1 && n <= state.slots.length) {
+      const s = state.slots[n - 1];
+      await updateSlot(s.id, { status: 'cancelled' });
+      delete pending[from];
+      await sendWA(from, `❌ Clase cancelada: *${slotLabel(s)}*\n\nSi quieres recuperar el hueco otro día, escríbeme *hola*. 👋`);
+      await notifyProf(state.profId,
+        `❌ *Clase cancelada por el alumno*\n👤 ${state.studentName}\n📅 ${slotLabel(s)}`
+      );
+    } else {
+      await sendWA(from, `Responde con el número de la clase (1-${state.slots.length}), o *listo* para salir.`);
+    }
     res.send('<Response></Response>');
     return;
   }
