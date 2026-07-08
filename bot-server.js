@@ -615,7 +615,7 @@ async function notifyProf(profId, body) {
 // ESTADO DE CONVERSACIÓN
 // ════════════════════════════════════════════════════════════
 
-function makeSuggestState(st, freeSlots) {
+function makeSuggestState(st, freeSlots, weekMode = false) {
   return {
     type:        'suggest',
     studentId:   st.id,
@@ -623,8 +623,15 @@ function makeSuggestState(st, freeSlots) {
     profId:      st.profId ?? st.prof_id,
     slots:       freeSlots,
     idx:         0,
+    booked:      [],       // clases reservadas en esta conversación
+    weekMode,              // true: solo ofrecer huecos de la semana que viene
     expires:     thuExpiry(),
   };
+}
+
+// Fecha de inicio para ofrecer huecos según el modo
+function suggestFromDate(state) {
+  return state?.weekMode ? nextWeekMonday().toISOString().split('T')[0] : null;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -658,26 +665,28 @@ async function sendBookingRequests(force = false) {
   const students = allStudents.filter(s => s.active && s.phone && s.botActive !== false);
   let sent = 0;
 
+  const nextMon = nextWeekMonday().toISOString().split('T')[0];
   for (const st of students) {
     if (pending[st.phone]) { console.log(`⏭️  ${st.name} ya en conversación`); continue; }
 
     const profId = st.profId ?? st.prof_id;
-    const free = await nextFreeSlots(profId, 8);
+    const free = await nextFreeSlots(profId, 8, nextMon);
     if (!free.length) {
-      await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles esta semana. Contacta con la autoescuela.`);
+      await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Contacta con la autoescuela.`);
       continue;
     }
 
     const slot = free[0];
     const msg =
       `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-      `Para la semana que viene te propongo:\n\n` +
+      `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
       `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
       `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
+      `Puedes reservar todas las clases que quieras, una detrás de otra.\n` +
       `⚠️ El plazo cierra el jueves.`;
 
     await sendWA(st.phone, msg);
-    pending[st.phone] = makeSuggestState({ ...st, profId }, free);
+    pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
     sent++;
   }
   console.log(`✅ Recomendaciones enviadas: ${sent} alumnos`);
@@ -829,7 +838,13 @@ app.post('/bot', async (req, res) => {
   if (state.type === 'suggest') {
     if (isDone(body)) {
       delete pending[from];
-      await sendWA(from, `¡Perfecto ${state.studentName}! Tus clases están guardadas. Te avisaremos 48h antes. 🚗`);
+      const booked = state.booked || [];
+      const resumen = booked.length
+        ? `\n\n📋 *Tus clases reservadas:*\n` +
+          booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n') +
+          `\n\nTe recordaremos cada una 48h antes.`
+        : '';
+      await sendWA(from, `¡Perfecto ${state.studentName}!${resumen} 🚗`);
       res.send('<Response></Response>');
       return;
     }
@@ -839,7 +854,7 @@ app.post('/bot', async (req, res) => {
     if (isYes(body)) {
       // Verificar que sigue libre
       if (!(await isSlotFree(state.profId, currentSlot.date, currentSlot.time))) {
-        const fresh = await nextFreeSlots(state.profId, 8);
+        const fresh = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
         if (!fresh.length) {
           delete pending[from];
           await sendWA(from, `Lo siento, ese hueco acaba de ocuparse y no hay más disponibles. Llama a la autoescuela.`);
@@ -854,18 +869,21 @@ app.post('/bot', async (req, res) => {
       }
 
       await bookSlot(state.studentId, state.studentName, state.profId, currentSlot);
-      const remaining = await nextFreeSlots(state.profId, 8);
+      state.booked = state.booked || [];
+      state.booked.push(currentSlot);
+      const remaining = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
       state.slots = remaining; state.idx = 0;
 
+      const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
       await sendWA(from,
-        `✅ ¡Reservado!\n📅 *${currentSlot.dayName} ${formatDate(currentSlot.date)} a las ${currentSlot.time}h*\n\n` +
-        `¿Quieres reservar otra clase? Responde *SÍ* para el siguiente hueco libre, *NO* para ver opciones, o *listo* para terminar.`
+        `✅ ¡Reservada!\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
+        `¿Quieres otra? Responde *SÍ* para el siguiente hueco, *NO* para ver opciones, o *listo* para terminar.`
       );
 
     } else if (isNo(body)) {
       state.idx++;
       if (state.idx >= state.slots.length) {
-        const more = await nextFreeSlots(state.profId, 8);
+        const more = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
         state.slots = more; state.idx = 0;
       }
       if (!state.slots.length) {
@@ -883,7 +901,7 @@ app.post('/bot', async (req, res) => {
       // Texto libre — parsear día/hora
       const { dow, hour } = parseBookingText(body);
       if (dow || hour) {
-        const allFree = await nextFreeSlots(state.profId, 20);
+        const allFree = await nextFreeSlots(state.profId, 20, suggestFromDate(state));
         let match = null;
         if (dow && hour) {
           match = allFree.find(s => {
@@ -1099,19 +1117,21 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
 
   const profId = st.profId ?? st.prof_id;
-  const free = await nextFreeSlots(profId, 8);
+  const nextMon = nextWeekMonday().toISOString().split('T')[0];
+  const free = await nextFreeSlots(profId, 8, nextMon);
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
   const slot = free[0];
   const msg =
     `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-    `Para la semana que viene te propongo:\n\n` +
+    `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
     `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
     `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
+    `Puedes reservar todas las clases que quieras, una detrás de otra.\n` +
     `⚠️ El plazo cierra el jueves.`;
 
   await sendWA(st.phone, msg);
-  pending[st.phone] = makeSuggestState({ ...st, profId }, free);
+  pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
 
   console.log(`📤 CRM → mensaje manual enviado a ${st.name} (${st.phone})`);
   res.json({ ok: true, student: st.name, phone: st.phone });
