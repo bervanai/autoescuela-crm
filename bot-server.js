@@ -420,6 +420,13 @@ const MONTH_NAMES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct'
 
 function todayDow() { return new Date().getDay(); }
 
+// Fecha YYYY-MM-DD en hora LOCAL (toISOString usa UTC y desplaza un día
+// cuando el servidor no está en UTC — bug sutil de zona horaria)
+function ymdLocal(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 function nextWeekMonday() {
   const now  = new Date();
   const dow  = now.getDay();
@@ -436,7 +443,7 @@ function nextWeekDates() {
     const d = new Date(mon);
     d.setDate(mon.getDate() + i);
     return {
-      date:    d.toISOString().split('T')[0],
+      date:    ymdLocal(d),
       dayName: ['Lunes','Martes','Miércoles','Jueves','Viernes'][i],
       dow:     i + 1,
     };
@@ -482,9 +489,10 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
   const [slots, examDays, avail, blocked] = await Promise.all([
     loadSlots(), loadExamDays(), loadAvailability(), loadBlocked(),
   ]);
-  const start  = fromDate ? new Date(fromDate) : new Date();
+  // Anclar al mediodía local: evita desplazamientos de día por zona horaria
+  const start = fromDate ? new Date(`${String(fromDate).substring(0, 10)}T12:00:00`) : new Date();
   if (!fromDate) start.setDate(start.getDate() + 1);
-  start.setHours(0, 0, 0, 0);
+  start.setHours(12, 0, 0, 0);
 
   const free = [];
   for (let d = 0; d < 60 && free.length < count; d++) {
@@ -492,7 +500,7 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
     dt.setDate(start.getDate() + d);
     const dow  = dt.getDay();
     if (dow === 0) continue; // sin domingos
-    const date  = dt.toISOString().split('T')[0];
+    const date  = ymdLocal(dt);
     if (examDays.includes(date)) continue; // día de examen: sin clases
 
     for (const hour of hoursForProfDaySync(avail, profId, dow)) {
@@ -660,7 +668,7 @@ function makeSuggestState(st, freeSlots, weekMode = false) {
 
 // Fecha de inicio para ofrecer huecos según el modo
 function suggestFromDate(state) {
-  return state?.weekMode ? nextWeekMonday().toISOString().split('T')[0] : null;
+  return state?.weekMode ? ymdLocal(nextWeekMonday()) : null;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -694,7 +702,7 @@ async function sendBookingRequests(force = false) {
   const students = allStudents.filter(s => s.active && s.phone && s.botActive !== false);
   let sent = 0;
 
-  const nextMon = nextWeekMonday().toISOString().split('T')[0];
+  const nextMon = ymdLocal(nextWeekMonday());
   for (const st of students) {
     if (pending[st.phone]) { console.log(`⏭️  ${st.name} ya en conversación`); continue; }
 
@@ -861,7 +869,7 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
-    const nextMon = nextWeekMonday().toISOString().split('T')[0];
+    const nextMon = ymdLocal(nextWeekMonday());
     const free = await nextFreeSlots(profId, 8, nextMon);
     if (!free.length) {
       await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
@@ -1033,40 +1041,91 @@ app.post('/bot', async (req, res) => {
       }
       const next = state.slots[state.idx];
       await sendWA(from,
-        `De acuerdo, te propongo:\n\n📅 *${next.dayName} ${formatDate(next.date)} a las ${next.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
+        `De acuerdo, te propongo:\n\n📅 *${next.dayName} ${formatDate(next.date)} a las ${next.time}h*\n\n` +
+        `¿Te viene bien? *SÍ* o *NO* — o pregúntame directamente (ej: *"¿el martes a las 10 está libre?"*)`
       );
 
     } else {
-      // Texto libre — parsear día/hora
+      // Texto libre — el alumno pregunta por un día/hora concreto
       const { dow, hour } = parseBookingText(body);
       if (dow || hour) {
-        const allFree = await nextFreeSlots(state.profId, 20, suggestFromDate(state));
-        let match = null;
-        if (dow && hour) {
-          match = allFree.find(s => {
-            const d = new Date(s.date + 'T12:00:00').getDay();
-            return d === dow && s.time === hour.padStart(5, '0');
-          });
-        } else if (dow) {
-          match = allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow);
-        } else if (hour) {
-          match = allFree.find(s => s.time === hour.padStart(5, '0'));
-        }
+        const allFree = await nextFreeSlots(state.profId, 60, suggestFromDate(state));
+        const hh = hour ? hour.padStart(5, '0') : null;
+        const NOMBRE_DIA = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 
-        if (match) {
-          state.slots = [match, ...allFree.filter(s => s !== match)];
-          state.idx = 0;
-          await sendWA(from,
-            `He encontrado este hueco:\n\n📅 *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
-          );
+        // Fecha objetivo cuando pregunta por un día
+        const targetDate = dow
+          ? (state.weekMode
+              ? (dateForDow(dow)?.date || null)
+              : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null))
+          : null;
+
+        if (dow && hh) {
+          // Pregunta concreta: "¿el martes a las 10 está libre?"
+          const exact = allFree.find(s => s.date === targetDate && s.time === hh);
+          if (exact) {
+            state.slots = [exact, ...allFree.filter(s => s !== exact)];
+            state.idx = 0;
+            await sendWA(from,
+              `✅ ¡Está libre!\n\n📅 *${exact.dayName} ${formatDate(exact.date)} a las ${exact.time}h*\n\n¿Lo reservo? *SÍ* o *NO*`
+            );
+          } else {
+            const sameDay = targetDate ? allFree.filter(s => s.date === targetDate) : [];
+            if (sameDay.length) {
+              state.slots = [...sameDay, ...allFree.filter(s => !sameDay.includes(s))];
+              state.idx = 0;
+              await sendWA(from,
+                `❌ El ${NOMBRE_DIA[dow]} a las ${hh}h *no está disponible*.\n\n` +
+                `Ese día quedan libres: *${sameDay.map(s => s.time).join('h, ')}h*\n\n` +
+                `Dime cuál te va (ej: *"a las ${sameDay[0].time}"*), o *NO* para ver otros días.`
+              );
+            } else {
+              const cur = state.slots[state.idx];
+              await sendWA(from,
+                `❌ El ${NOMBRE_DIA[dow]} *no queda ningún hueco libre*.\n\n` +
+                `El siguiente disponible es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
+              );
+            }
+          }
+        } else if (dow) {
+          // Pregunta por un día: "¿el martes está libre?"
+          const sameDay = targetDate ? allFree.filter(s => s.date === targetDate) : [];
+          if (sameDay.length) {
+            state.slots = [...sameDay, ...allFree.filter(s => !sameDay.includes(s))];
+            state.idx = 0;
+            await sendWA(from,
+              `✅ El ${NOMBRE_DIA[dow]} ${formatDate(targetDate)} tiene huecos libres:\n\n` +
+              `🕐 *${sameDay.map(s => s.time).join('h, ')}h*\n\n` +
+              `Dime la hora que te va (ej: *"a las ${sameDay[0].time}"*), o *SÍ* para reservar la de las ${sameDay[0].time}h.`
+            );
+          } else {
+            const cur = state.slots[state.idx];
+            await sendWA(from,
+              `❌ El ${NOMBRE_DIA[dow]} *no queda ningún hueco libre*.\n\n` +
+              `El siguiente disponible es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
+            );
+          }
         } else {
-          const cur = state.slots[state.idx];
-          await sendWA(from,
-            `No hay huecos disponibles para esa preferencia 😅\n\nEl siguiente libre es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
-          );
+          // Pregunta por una hora: "¿a las 10 está libre?"
+          // Priorizar el orden de la conversación (si acaba de preguntar por
+          // un día, state.slots empieza por ese día)
+          const exact = state.slots.find(s => s.time === hh) || allFree.find(s => s.time === hh);
+          if (exact) {
+            state.slots = [exact, ...allFree.filter(s => s !== exact)];
+            state.idx = 0;
+            await sendWA(from,
+              `✅ Las ${hh}h están libres el *${exact.dayName} ${formatDate(exact.date)}*.\n\n¿Lo reservo? *SÍ* o *NO*`
+            );
+          } else {
+            const cur = state.slots[state.idx];
+            await sendWA(from,
+              `❌ A las ${hh}h *no queda hueco* esta semana.\n\n` +
+              `El siguiente disponible es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
+            );
+          }
         }
       } else {
-        await sendWA(from, `Responde *SÍ* para confirmar, *NO* para ver otro hueco, o dime un día y hora como *"martes a las 10"* 😊`);
+        await sendWA(from, `Responde *SÍ* para confirmar, *NO* para ver otro hueco, o pregúntame por una hora (ej: *"¿el martes a las 10 está libre?"*) 😊`);
       }
     }
     res.send('<Response></Response>');
@@ -1256,7 +1315,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
 
   const profId = st.profId ?? st.prof_id;
-  const nextMon = nextWeekMonday().toISOString().split('T')[0];
+  const nextMon = ymdLocal(nextWeekMonday());
   const free = await nextFreeSlots(profId, 8, nextMon);
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
