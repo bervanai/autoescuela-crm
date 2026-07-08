@@ -2638,20 +2638,9 @@ function App(){
         if(!cancelled)setCloudStatus('error');
       }
     };
-    const push=async()=>{
-      if(user.role!=='admin')return;
-      if(Date.now()-lastLocalChange.current<3000)return; // el push instantáneo ya va en camino
-      try{
-        await syncToSupabase();
-        if(!cancelled){setCloudStatus('ok');setLastCloudSync(new Date());}
-      }catch(e){
-        if(!cancelled)setCloudStatus('error');
-      }
-    };
     pull();                              // al entrar: descargar el estado real
     const iv=setInterval(pull,15000);    // espejo de la nube cada 15s
-    const iv2=setInterval(push,60000);   // red de seguridad de subida
-    return()=>{cancelled=true;clearInterval(iv);clearInterval(iv2);};
+    return()=>{cancelled=true;clearInterval(iv);};
   },[user,schoolConfig]);
 
   // ── Push instantáneo: cualquier cambio LOCAL se sube a Supabase en ~1.5s ──
@@ -2670,15 +2659,21 @@ function App(){
     if(snapshot===lastPushed.current)return; // nada cambió de verdad (p.ej. sync del bot)
     lastLocalChange.current=Date.now();
     clearTimeout(instantTimer.current);
-    instantTimer.current=setTimeout(async()=>{
+    const doPush=async(retry)=>{
       try{
         await syncToSupabase();
         lastPushed.current=snapshot;
         setCloudStatus('ok');setLastCloudSync(new Date());
       }catch(e){
         setCloudStatus('error');
+        if(retry>0){
+          // Mantener el pull a raya mientras reintentamos (no pisar la edición)
+          lastLocalChange.current=Date.now();
+          instantTimer.current=setTimeout(()=>doPush(retry-1),4000);
+        }
       }
-    },1500);
+    };
+    instantTimer.current=setTimeout(()=>doPush(2),1500);
     return()=>clearTimeout(instantTimer.current);
   },[students,slots,professors,vehicles,examDays,user]);
 
