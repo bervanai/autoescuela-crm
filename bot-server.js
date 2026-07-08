@@ -414,7 +414,7 @@ async function isBlockedSlot(profId, date, hour) {
 // HELPERS DE FECHA
 // ════════════════════════════════════════════════════════════
 
-const DAY_NAMES  = { lunes:1, martes:2, miercoles:3, 'miércoles':3, jueves:4, viernes:5 };
+const DAY_NAMES  = { lunes:1, martes:2, miercoles:3, 'miércoles':3, jueves:4, viernes:5, sabado:6, 'sábado':6 };
 const DAY_LABELS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const MONTH_NAMES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 
@@ -439,12 +439,12 @@ function nextWeekMonday() {
 
 function nextWeekDates() {
   const mon = nextWeekMonday();
-  return [0,1,2,3,4].map(i => {
+  return [0,1,2,3,4,5].map(i => {
     const d = new Date(mon);
     d.setDate(mon.getDate() + i);
     return {
       date:    ymdLocal(d),
-      dayName: ['Lunes','Martes','Miércoles','Jueves','Viernes'][i],
+      dayName: ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][i],
       dow:     i + 1,
     };
   });
@@ -468,7 +468,8 @@ function bookingWindowOpen() {
 
 function thuExpiry() {
   const now = new Date();
-  const daysToThu = (4 - now.getDay() + 7) % 7 || 7;
+  // En jueves la ventana cierra ESTA noche (antes saltaba al jueves siguiente)
+  const daysToThu = (4 - now.getDay() + 7) % 7;
   const thu = new Date(now);
   thu.setDate(now.getDate() + daysToThu);
   thu.setHours(23, 59, 0, 0);
@@ -692,7 +693,7 @@ async function incrementClases(studentId) {
 // ════════════════════════════════════════════════════════════
 
 async function sendBookingRequests(force = false) {
-  console.log('\n📅 [RESERVAS] Recomendando clases...');
+  console.log('\n📅 [RESERVAS] Campaña semanal...');
   if (!force && !bookingWindowOpen()) {
     console.log('⏭️  Fuera de ventana (solo Mar-Jue)');
     return;
@@ -700,11 +701,22 @@ async function sendBookingRequests(force = false) {
 
   const allStudents = await loadStudents();
   const students = allStudents.filter(s => s.active && s.phone && s.botActive !== false);
-  let sent = 0;
+  const slots    = await loadSlots();
+  const weekDates = nextWeekDates().map(w => w.date);
+  const dow = todayDow(); // 2=mar (inicial), 3=mié (recordatorio), 4=jue (último día)
+  let sent = 0, skipped = 0;
 
   const nextMon = ymdLocal(nextWeekMonday());
   for (const st of students) {
     if (pending[st.phone]) { console.log(`⏭️  ${st.name} ya en conversación`); continue; }
+
+    // Si ya tiene clases la semana que viene, no molestar en los recordatorios
+    const yaReservo = slots.some(
+      s => (s.studentId ?? s.student_id) === st.id
+        && weekDates.includes(String(s.date).substring(0, 10))
+        && s.status !== 'cancelled'
+    );
+    if (yaReservo && !force) { skipped++; continue; }
 
     const profId = st.profId ?? st.prof_id;
     const free = await nextFreeSlots(profId, 8, nextMon);
@@ -714,19 +726,30 @@ async function sendBookingRequests(force = false) {
     }
 
     const slot = free[0];
-    const msg =
-      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-      `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
-      `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
-      `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-      `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
-      `⚠️ El plazo cierra el jueves.`;
+    const urgencia =
+      dow === 4 ? `⚠️ *ÚLTIMO DÍA*: el plazo cierra HOY a medianoche.` :
+      dow === 3 ? `⚠️ El plazo cierra mañana jueves.` :
+                  `⚠️ Tienes hasta el jueves para reservar.`;
+
+    // Martes (o manual): presentación completa. Mié/Jue: recordatorio directo.
+    const esInicial = dow === 2 || force;
+    const msg = esInicial
+      ? `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
+        `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
+        `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
+        `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
+        `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
+        urgencia
+      : `Hola ${st.name} 👋 Aún no tienes clases reservadas para la semana que viene.\n\n` +
+        `Te propongo:\n📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
+        `Responde *SÍ*, un número (ej: *3* clases de golpe), o *NO* para ver más huecos.\n` +
+        urgencia;
 
     await sendWA(st.phone, msg);
     pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
     sent++;
   }
-  console.log(`✅ Recomendaciones enviadas: ${sent} alumnos`);
+  console.log(`✅ Campaña: ${sent} contactados · ${skipped} ya tenían clases (no molestados)`);
 }
 
 // ════════════════════════════════════════════════════════════
