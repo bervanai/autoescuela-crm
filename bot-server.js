@@ -689,7 +689,7 @@ async function sendBookingRequests(force = false) {
       `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
       `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
       `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-      `Puedes reservar todas las clases que quieras, una detrás de otra.\n` +
+      `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
       `⚠️ El plazo cierra el jueves.`;
 
     await sendWA(st.phone, msg);
@@ -810,7 +810,7 @@ app.post('/bot', async (req, res) => {
       `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
       `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
       `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-      `Puedes reservar todas las clases que quieras, una detrás de otra.`;
+      `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.`;
 
     await sendWA(from, msg);
     pending[from] = makeSuggestState({ ...st, profId }, free, true);
@@ -859,6 +859,47 @@ app.post('/bot', async (req, res) => {
     }
 
     const currentSlot = state.slots[state.idx];
+
+    // ── Atajo: un número ("3" o "quiero 3 clases") reserva N clases
+    //    de golpe, repartidas en días distintos de la semana ──
+    const multiMatch = norm(body).match(/^([1-6])$/) || norm(body).match(/\b([1-6])\s*clases?\b/);
+    if (multiMatch) {
+      const wanted = parseInt(multiMatch[1]);
+      const all = await nextFreeSlots(state.profId, 30, suggestFromDate(state));
+      // Repartir: primera hora de cada día distinto; si pide más que días, segundas horas
+      const byDate = {};
+      all.forEach(s => { (byDate[s.date] = byDate[s.date] || []).push(s); });
+      const dates = Object.keys(byDate).sort();
+      const picked = [];
+      for (let ronda = 0; picked.length < wanted && ronda < 8; ronda++) {
+        let added = false;
+        for (const d of dates) {
+          if (picked.length >= wanted) break;
+          if (byDate[d][ronda]) { picked.push(byDate[d][ronda]); added = true; }
+        }
+        if (!added) break;
+      }
+      if (!picked.length) {
+        await sendWA(from, `No quedan huecos disponibles la semana que viene 😔 Llama a la autoescuela.`);
+        res.send('<Response></Response>');
+        return;
+      }
+      picked.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+      for (const s of picked) {
+        await bookSlot(state.studentId, state.studentName, state.profId, s);
+      }
+      state.booked = (state.booked || []).concat(picked);
+      state.slots = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
+      state.idx = 0;
+
+      const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
+      await sendWA(from,
+        `✅ ¡Hechas! He reservado tus ${picked.length} clases:\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
+        `¿Quieres alguna más? Responde *SÍ*, otro número, o *listo* para terminar.`
+      );
+      res.send('<Response></Response>');
+      return;
+    }
 
     if (isYes(body)) {
       // Verificar que sigue libre
@@ -1136,7 +1177,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
     `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
     `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
     `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-    `Puedes reservar todas las clases que quieras, una detrás de otra.\n` +
+    `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
     `⚠️ El plazo cierra el jueves.`;
 
   await sendWA(st.phone, msg);
