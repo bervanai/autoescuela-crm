@@ -2555,6 +2555,39 @@ function App(){
   // Reset supabase client whenever school config changes (new credentials)
   useEffect(()=>{ resetSupabase(); },[schoolConfig]);
 
+  // Normalizadores camelCase → snake_case (el servidor pone school_id por sesión)
+  const normSlotDB=s=>({
+    id:s.id,
+    student_id:s.studentId||s.student_id||null,
+    prof_id:s.profId||s.prof_id||null,
+    vehicle_id:s.vehicleId||s.vehicle_id||null,
+    date:s.date,time:s.time,
+    duration:s.duration||45,
+    slot_type:s.slotType||s.slot_type||s.type||'practica',
+    status:s.cancelled?'cancelled':s.confirmed?'confirmed':'pending',
+    reminder_sent:!!(s.reminderSent||s.reminder_sent),
+    created_by:s.fromBot?'bot':'crm',
+  });
+  // Recoge disponibilidad, bloqueos y exam desde localStorage
+  const collectAvailRows=()=>{
+    const availObj=load('crm_avail_v1',{})||{};
+    const rows=[];
+    Object.entries(availObj).forEach(([profId,days])=>{
+      Object.entries(days||{}).forEach(([dk,hours])=>{
+        if(['lun','mar','mie','jue','vie','sab'].includes(dk))
+          rows.push({prof_id:profId,day_key:dk,hours:hours||[]});
+      });
+    });
+    return rows;
+  };
+  const collectBlockedRows=()=>Object.values(load('crm_blocked_v1',{})||{})
+    .filter(b=>b&&b.profId&&b.date&&b.hour)
+    .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
+
+  // Ref de las clases ya sincronizadas (id → JSON), para el diff granular
+  const syncedSlots=useRef({});
+
+  // Guardado completo (reemplazo) — usado por el botón "Subir a Supabase"
   const syncToSupabase=async()=>{
     const sb=getSupabase();
     if(!sb)throw new Error('Supabase no configurado');
@@ -2564,7 +2597,6 @@ function App(){
     const slotsArr=Object.values(load('crm_slots_v4',slots)||{});
     const profsArr=load('crm_professors_v3',professors)||[];
     const vehiclesArr=load('crm_vehicles_v3',vehicles)||[];
-    // camelCase → snake_case (el servidor pone el school_id según la sesión)
     const normProf=p=>({
       id:p.id,name:p.name,color:p.color||'#1e3a5f',
       phone:p.phone||null,email:p.email||null,active:p.active!==false,
@@ -2583,40 +2615,15 @@ function App(){
       exam_result:s.examResult||s.exam_result||null,
     });
     const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
-    const normSlot=s=>({
-      id:s.id,
-      student_id:s.studentId||s.student_id||null,
-      prof_id:s.profId||s.prof_id||null,
-      vehicle_id:s.vehicleId||s.vehicle_id||null,
-      date:s.date,time:s.time,
-      duration:s.duration||45,
-      slot_type:s.slotType||s.slot_type||s.type||'practica',
-      status:s.cancelled?'cancelled':s.confirmed?'confirmed':'pending',
-      reminder_sent:!!(s.reminderSent||s.reminder_sent),
-      created_by:s.fromBot?'bot':'crm',
-    });
-    // Disponibilidad y bloqueos desde localStorage
-    const availObj=load('crm_avail_v1',{})||{};
-    const availRows=[];
-    Object.entries(availObj).forEach(([profId,days])=>{
-      Object.entries(days||{}).forEach(([dk,hours])=>{
-        if(['lun','mar','mie','jue','vie','sab'].includes(dk))
-          availRows.push({prof_id:profId,day_key:dk,hours:hours||[]});
-      });
-    });
-    const blockedObj=load('crm_blocked_v1',{})||{};
-    const blockedRows=Object.values(blockedObj)
-      .filter(b=>b&&b.profId&&b.date&&b.hour)
-      .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
 
     const {data,error}=await sb.rpc('crm_save_data',{
       p_token:token,
       p_professors:profsArr.map(normProf),
       p_students:studentsArr.filter(s=>s.id&&s.name).map(normStu),
       p_vehicles:vehiclesArr.map(normVeh),
-      p_slots:slotsArr.filter(s=>s.id&&s.date&&s.time).map(normSlot),
-      p_availability:availRows,
-      p_blocked:blockedRows,
+      p_slots:slotsArr.filter(s=>s.id&&s.date&&s.time).map(normSlotDB),
+      p_availability:collectAvailRows(),
+      p_blocked:collectBlockedRows(),
       p_exam_days:load('crm_exam_days_v3',[])||[],
     });
     if(error){
@@ -2624,7 +2631,54 @@ function App(){
         throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
       throw new Error(error.message);
     }
+    // Registrar el estado de clases como base del diff granular
+    const snap={};
+    slotsArr.filter(s=>s.id&&s.date&&s.time).forEach(s=>{snap[s.id]=JSON.stringify(normSlotDB(s));});
+    syncedSlots.current=snap;
     return data;
+  };
+
+  // Push incremental automático: clases por id (granular, no borra las del
+  // bot que aún no conocemos) + resto de tablas por reemplazo (el bot no
+  // las escribe). Este es el camino del auto-sync tras cada edición.
+  const pushIncremental=async()=>{
+    const sb=getSupabase();
+    const token=sessionStorage.getItem('crm_token');
+    if(!sb||!token)return;
+    // Diff de clases
+    const cur={};
+    Object.values(slots).filter(s=>s.id&&s.date&&s.time).forEach(s=>{cur[s.id]=normSlotDB(s);});
+    const upserts=[];
+    Object.entries(cur).forEach(([id,row])=>{
+      const j=JSON.stringify(row);
+      if(syncedSlots.current[id]!==j)upserts.push(row);
+    });
+    const deleteIds=Object.keys(syncedSlots.current).filter(id=>!cur[id]);
+    if(upserts.length||deleteIds.length){
+      const {error}=await sb.rpc('crm_sync_slots',{p_token:token,p_upserts:upserts,p_delete_ids:deleteIds});
+      if(error)throw new Error(error.message);
+      const snap={};Object.entries(cur).forEach(([id,row])=>{snap[id]=JSON.stringify(row);});
+      syncedSlots.current=snap;
+    }
+    // Resto de tablas (sin clases) por reemplazo
+    const normProf=p=>({id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false});
+    const normStu=s=>({id:s.id,name:s.name,phone:s.phone||null,prof_id:s.profId||s.prof_id||null,license:s.license||'B',vehicle_type:s.vehicleType||s.vehicle_type||'manual',num_clases:s.numClases??s.num_clases??0,bono:s.bono||null,tasas_pagadas:!!s.tasasPagadas,active:s.active!==false,bot_active:s.botActive!==false,exam_date:s.examDate||s.exam_date||null,exam_result:s.examResult||s.exam_result||null});
+    const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
+    const {error}=await sb.rpc('crm_save_data',{
+      p_token:token,
+      p_professors:(professors||[]).map(normProf),
+      p_students:(students||[]).filter(s=>s.id&&s.name).map(normStu),
+      p_vehicles:(vehicles||[]).map(normVeh),
+      p_slots:null, // las clases van por crm_sync_slots
+      p_availability:collectAvailRows(),
+      p_blocked:collectBlockedRows(),
+      p_exam_days:examDays||[],
+    });
+    if(error){
+      if((error.message||'').includes('SESION_INVALIDA'))
+        throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
+      throw new Error(error.message);
+    }
   };
 
   const loadFromSupabase=async()=>{
@@ -2667,9 +2721,15 @@ function App(){
         duration:s.duration||45,
         confirmed:s.status==='confirmed',
         cancelled:s.status==='cancelled',
+        fromBot:s.created_by==='bot',
       };
     });
     setSlots(nextSlots);
+    // Registrar las clases descargadas como base del diff (evita que una
+    // reserva del bot recién bajada se detecte como "nueva del admin")
+    const snap={};
+    Object.values(nextSlots).forEach(s=>{snap[s.id]=JSON.stringify(normSlotDB(s));});
+    syncedSlots.current=snap;
     // Disponibilidad y bloqueos → localStorage (los lee el componente Disponibilidad)
     const availMap={};
     (d.availability||[]).forEach(a=>{
@@ -2776,7 +2836,7 @@ function App(){
     clearTimeout(instantTimer.current);
     const doPush=async(retry)=>{
       try{
-        await syncToSupabase();
+        await pushIncremental();
         lastPushed.current=snapshot;
         setCloudStatus('ok');setLastCloudSync(new Date());
       }catch(e){
