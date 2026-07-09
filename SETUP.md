@@ -108,15 +108,23 @@ Para usar el número propio de la autoescuela en lugar del sandbox de Twilio:
 ## Verificar que todo funciona
 
 ```bash
-# Ping al bot
-curl https://tu-bot.railway.app/api/ping
+# Ping al bot (abierto)
+curl https://autoescuela-bot-production.up.railway.app/api/ping
 
-# Estado del bot
-curl https://tu-bot.railway.app/status
+# Estado agregado (abierto, sin datos personales)
+curl https://autoescuela-bot-production.up.railway.app/status
 
-# Lanzar reservas de prueba (fuerza el envío aunque no sea Mar-Jue)
-curl https://tu-bot.railway.app/test/reservas
+# Lanzar la campaña de reservas ahora (requiere BOT_API_KEY)
+curl "https://autoescuela-bot-production.up.railway.app/test/reservas?key=LA_CLAVE"
 ```
+
+### Seguridad del bot
+
+- El webhook `/bot` **valida la firma de Twilio**: nadie puede suplantar
+  mensajes de alumnos. (Escape de emergencia: variable `TWILIO_VALIDATE=off`.)
+- Los disparadores de campaña (`/test/reservas`, `/test/recordatorios`,
+  `/test/hola`) requieren la variable `BOT_API_KEY` (ver Railway → Variables).
+- No existe API de datos: los teléfonos y clases solo viajan por Supabase.
 
 ---
 
