@@ -831,7 +831,27 @@ async function bookSlot(studentId, studentName, profId, slot) {
 // WEBHOOK — /bot
 // ════════════════════════════════════════════════════════════
 
+// Validación de firma: solo Twilio (que firma con el Auth Token) puede
+// invocar el webhook. Se activa sola en producción (Railway); en local
+// se omite. Escape de emergencia: TWILIO_VALIDATE=off
+function twilioSignatureOk(req) {
+  if (process.env.TWILIO_VALIDATE === 'off') return true;
+  const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  if (!domain || !AUTH_TOKEN) return true; // entorno local/desarrollo
+  const url = `https://${domain}${req.originalUrl}`;
+  const sig = req.headers['x-twilio-signature'] || '';
+  try {
+    return twilio.validateRequest(AUTH_TOKEN, sig, url, req.body || {});
+  } catch (e) {
+    return false;
+  }
+}
+
 app.post('/bot', async (req, res) => {
+  if (!twilioSignatureOk(req)) {
+    console.warn('🚫 Petición al webhook con firma inválida — rechazada');
+    return res.status(403).send('Forbidden');
+  }
   const from = (req.body.From || '').replace('whatsapp:', '') || '';
   const body = (req.body.Body || '').trim();
   console.log(`\n📥 ${from}: "${body}"`);
@@ -1198,46 +1218,32 @@ cron.schedule('59 23 * * 4', async () => {
 // ════════════════════════════════════════════════════════════
 
 app.get('/test/hola', async (req, res) => {
+  if (!requireKey(req, res)) return;
   await sendWA(NOTIFY_ADMIN, '👋 ¡Bot AutoEscuela activo!\n\nFlujos:\n📅 Mar-Jue 9:00 → solicitud de reserva\n⏰ Cada hora → recordatorios 48h antes\n🔒 Jue 23:59 → cierre de reservas');
   res.json({ ok: true });
 });
 
+// Los disparadores masivos requieren clave (BOT_API_KEY) si está configurada:
+// evita que cualquiera con la URL lance campañas de WhatsApp a los alumnos.
+function requireKey(req, res) {
+  const key = process.env.BOT_API_KEY;
+  if (!key) return true; // sin clave configurada: abierto (modo desarrollo)
+  if ((req.query.key || req.headers['x-api-key']) === key) return true;
+  res.status(403).json({ error: 'Clave incorrecta. Añade ?key=... o cabecera x-api-key' });
+  return false;
+}
+
 app.get('/test/reservas', async (req, res) => {
+  if (!requireKey(req, res)) return;
   await sendBookingRequests(true);
   res.json({ ok: true });
 });
 
 app.get('/test/recordatorios', async (req, res) => {
+  if (!requireKey(req, res)) return;
   await sendReminders();
   res.json({ ok: true });
 });
-
-app.get('/test/add-demo-slot', async (req, res) => {
-  const students = (await loadStudents()).filter(s => s.active);
-  if (!students.length) return res.json({ ok: false, msg: 'Sin alumnos' });
-  const st  = students[0];
-  const dt  = new Date(Date.now() + 47 * 3600000);
-  const date = dt.toISOString().split('T')[0];
-  const hour = dt.getHours().toString().padStart(2, '0') + ':00';
-  const profId = st.profId ?? st.prof_id;
-  const slot = {
-    id:          `slot_demo_${Date.now()}`,
-    studentId:   st.id,
-    profId:      profId,
-    date,
-    time:        hour,
-    dayName:     DAY_LABELS[dt.getDay()],
-    slotType:    'practica',
-    type:        'practica',
-    status:      'confirmed',
-    reminderSent: false,
-    createdBy:   'admin',
-  };
-  await insertSlot(slot);
-  res.json({ ok: true, slot, alumno: st.name });
-});
-
-app.get('/pending', (req, res) => res.json(pending));
 
 app.get('/status', async (req, res) => {
   const students = await loadStudents();
@@ -1266,68 +1272,9 @@ app.get('/api/ping', (req, res) => {
   res.json({ ok: true, time: new Date().toISOString(), version: '3.0', modo: USE_SUPABASE ? 'supabase' : 'json_local' });
 });
 
-// GET /api/slots
-app.get('/api/slots', async (req, res) => {
-  res.json(await loadSlots());
-});
-
-// POST /api/slots — crear o actualizar slot desde el CRM
-app.post('/api/slots', async (req, res) => {
-  const slot = req.body;
-  if (!slot || !slot.id) return res.status(400).json({ error: 'Slot inválido (requiere id)' });
-  const result = await upsertSlot(slot);
-  console.log(`📥 CRM → slot creado/actualizado: ${slot.id}`);
-  res.json({ ok: true, slot: result });
-});
-
-// PATCH /api/slots/:id
-app.patch('/api/slots/:id', async (req, res) => {
-  const existing = (await loadSlots()).find(s => s.id === req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Slot no encontrado' });
-
-  const updated = await updateSlot(req.params.id, req.body);
-  console.log(`📝 CRM → slot actualizado: ${req.params.id} → ${req.body.status || 'sin cambio de status'}`);
-
-  // Si se cancela, notificar al profesor
-  if (req.body.status === 'cancelled') {
-    const studentId = updated?.studentId ?? updated?.student_id ?? existing.studentId ?? existing.student_id;
-    const profId    = updated?.profId    ?? updated?.prof_id    ?? existing.profId    ?? existing.prof_id;
-    if (studentId) {
-      const students = await loadStudents();
-      const st = students.find(s => s.id === studentId);
-      if (st) {
-        notifyProf(profId,
-          `❌ *Clase cancelada desde CRM*\n👤 ${st.name}\n📅 ${updated?.date || existing.date} a las ${updated?.time || existing.time}h`
-        ).catch(() => {});
-      }
-    }
-  }
-  res.json({ ok: true, slot: updated });
-});
-
-// DELETE /api/slots/:id
-app.delete('/api/slots/:id', async (req, res) => {
-  const removed = await deleteSlot(req.params.id);
-  if (!removed) return res.status(404).json({ error: 'Slot no encontrado' });
-  console.log(`🗑️  CRM → slot eliminado: ${req.params.id}`);
-  res.json({ ok: true, removed });
-});
-
-// GET /api/students
-app.get('/api/students', async (req, res) => {
-  res.json(await loadStudents());
-});
-
-// PATCH /api/students/:id
-app.patch('/api/students/:id', async (req, res) => {
-  const students = await loadStudents();
-  const existing = students.find(s => s.id === req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Alumno no encontrado' });
-
-  const updated = await updateStudent(req.params.id, req.body);
-  console.log(`📝 CRM → alumno actualizado: ${updated?.name || req.params.id}`);
-  res.json({ ok: true, student: updated });
-});
+// NOTA: la API de datos (GET/POST/PATCH/DELETE de slots y students) se
+// eliminó: exponía teléfonos de alumnos y permitía modificar datos sin
+// autenticación. El CRM y el bot comparten los datos a través de Supabase.
 
 // POST /api/send-booking/:studentId
 app.post('/api/send-booking/:studentId', async (req, res) => {
@@ -1354,8 +1301,8 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   await sendWA(st.phone, msg);
   pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
 
-  console.log(`📤 CRM → mensaje manual enviado a ${st.name} (${st.phone})`);
-  res.json({ ok: true, student: st.name, phone: st.phone });
+  console.log(`📤 CRM → mensaje manual enviado a ${st.name}`);
+  res.json({ ok: true, student: st.name });
 });
 
 // POST /api/send-reminder/:slotId
@@ -1370,7 +1317,7 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
   if (!st?.phone) return res.status(400).json({ error: 'Alumno sin teléfono' });
 
   const msg =
-    `⏰ *Recordatorio de clase*\n\n` +
+    `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
     `Hola ${st.name}, tienes clase el *${slot.dayName || formatDate(slot.date)}* a las *${slot.time}h*.\n\n` +
     `Si no puedes venir, responde *CANCELAR*.\n` +
     `Si no respondes, la clase se mantiene. ✅`;
@@ -1407,19 +1354,10 @@ app.listen(PORT, () => {
   console.log('🔒 Cierre:       Jue 23:59');
   console.log('⏰ Recordatorios: cada hora (48h antes)');
   console.log('────────────────────────────────────────');
-  console.log('GET  /test/hola          → ping WhatsApp');
-  console.log('GET  /test/reservas      → lanzar reservas ahora');
-  console.log('GET  /test/recordatorios → comprobar 48h');
-  console.log('GET  /test/add-demo-slot → slot en 47h para test');
-  console.log('GET  /status             → estado del bot');
-  console.log('POST /bot                → webhook Twilio');
-  console.log('────────────────────────────────────────');
-  console.log('GET  /api/slots          → listar slots');
-  console.log('POST /api/slots          → crear/actualizar slot');
-  console.log('PATCH/DELETE /api/slots/:id');
-  console.log('GET  /api/students       → listar alumnos');
-  console.log('PATCH /api/students/:id');
+  console.log('POST /bot                → webhook Twilio (firma validada)');
+  console.log('GET  /api/ping           → health check');
+  console.log('GET  /status             → estado agregado');
   console.log('POST /api/send-booking/:studentId');
   console.log('POST /api/send-reminder/:slotId');
-  console.log('GET  /api/ping           → health check');
+  console.log(`GET  /test/reservas | /test/recordatorios ${process.env.BOT_API_KEY ? '(protegidos con clave)' : '(SIN clave — configurar BOT_API_KEY)'}`);
 });

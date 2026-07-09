@@ -2461,37 +2461,6 @@ function Configuracion({professors,students,setStudents,setSlots,setExamDays,sch
   );
 }
 
-function botSlotToCRM(s){
-  return {
-    id:        s.id,
-    date:      s.date,
-    time:      s.time,
-    profId:    s.profId,
-    studentId: s.studentId||null,
-    vehicleId: s.vehicleId||null,
-    slotType:  s.type||'practica',
-    confirmed: s.status==='confirmed',
-    fromBot:   true,
-    cancelled: s.status==='cancelled',
-  };
-}
-// Convierte slot del CRM a formato bot
-function crmSlotToBot(key,s){
-  return {
-    id:          s.id||key,
-    studentId:   s.studentId||null,
-    profId:      s.profId,
-    date:        s.date,
-    time:        s.time,
-    dayName:     s.dayName||'',
-    type:        s.slotType||'practica',
-    status:      s.cancelled?'cancelled':s.confirmed?'confirmed':'pending',
-    createdBy:   'crm',
-    reminderSent:false,
-    vehicleId:   s.vehicleId||null,
-  };
-}
-
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App(){
   const [user,setUser]=useState(()=>{try{const u=sessionStorage.getItem('crm_u');return u?JSON.parse(u):null}catch{return null}});
@@ -2661,40 +2630,14 @@ function App(){
   useEffect(()=>save('crm_exam_days_v3',examDays),[examDays]);
   useEffect(()=>save('crm_bot_url',botUrl),[botUrl]);
 
-  // ── Sync con el bot ──────────────────────────────────────
+  // ── Salud del bot ────────────────────────────────────────
+  // Los datos ya viajan por Supabase (el bot lee/escribe allí y el CRM
+  // hace pull cada 15s); al bot solo se le consulta que esté vivo.
   const syncFromBot=async(url=botUrl)=>{
     if(!url)return;
     try{
-      const r=await fetch(`${url}/api/slots`,{signal:AbortSignal.timeout(3000)});
+      const r=await fetch(`${url}/api/ping`,{signal:AbortSignal.timeout(4000)});
       if(!r.ok)throw new Error('HTTP '+r.status);
-      const arr=await r.json();
-      // Mezclar: slots del bot sobreescriben/añaden al CRM
-      setSlots(prev=>{
-        const next={...prev};
-        arr.forEach(bs=>{
-          if(bs.status==='cancelled'){
-            // Si está cancelado, quitar del calendario
-            delete next[bs.id];
-            // también buscar por date_time_profId
-            const altKey=`${bs.date}_${bs.time}_${bs.profId}`;
-            if(next[altKey]?.fromBot) delete next[altKey];
-          } else {
-            const crmS=botSlotToCRM(bs);
-            next[bs.id]=crmS;
-          }
-        });
-        return next;
-      });
-      // Sync alumnos (numClases actualizado por bot)
-      const rs=await fetch(`${url}/api/students`,{signal:AbortSignal.timeout(3000)});
-      if(rs.ok){
-        const botStudents=await rs.json();
-        setStudents(prev=>prev.map(s=>{
-          const bs=botStudents.find(b=>b.id===s.id);
-          if(bs&&bs.numClases!==undefined) return {...s,numClases:bs.numClases,botActive:bs.botActive};
-          return s;
-        }));
-      }
       setBotStatus('ok');
       setLastSync(new Date());
     }catch(e){
@@ -2773,30 +2716,8 @@ function App(){
     return()=>clearTimeout(instantTimer.current);
   },[students,slots,professors,vehicles,examDays,user]);
 
-  // ── Wrapper setSlots que también envía al bot ────────────
-  const setSlotsAndSync=async(updater)=>{
-    setSlots(prev=>{
-      const next=typeof updater==='function'?updater(prev):updater;
-      // Detectar slots nuevos o modificados y enviarlos al bot
-      Object.values(next).forEach(s=>{
-        const old=prev[s.id];
-        const changed=!old||(old.confirmed!==s.confirmed)||(old.cancelled!==s.cancelled);
-        if(changed&&botStatus==='ok'&&botUrl){
-          fetch(`${botUrl}/api/slots`,{
-            method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify(crmSlotToBot(s.id,s))
-          }).catch(()=>{});
-        }
-      });
-      // Detectar slots eliminados
-      Object.keys(prev).forEach(k=>{
-        if(!next[k]&&botStatus==='ok'&&botUrl){
-          fetch(`${botUrl}/api/slots/${k}`,{method:'DELETE'}).catch(()=>{});
-        }
-      });
-      return next;
-    });
-  };
+  // Los cambios de horario viajan a Supabase por el push instantáneo;
+  // el bot los lee de allí (ya no se le envían por REST).
 
   const login=u=>{setUser(u);sessionStorage.setItem('crm_u',JSON.stringify(u));setPage(u.role==='admin'?'dashboard':'horario');};
   const logout=()=>{
@@ -2813,8 +2734,8 @@ function App(){
   const pages={
     dashboard:      <Dashboard {...shared} slots={slots}/>,
     alumnos:        <Alumnos {...shared} setStudents={setStudents}/>,
-    horario:        <Horario {...shared} slots={slots} setSlots={setSlotsAndSync} vehicles={vehicles} examDays={examDays} setExamDays={setExamDays}/>,
-    disponibilidad: <Disponibilidad {...shared} slots={slots} setSlots={setSlotsAndSync}/>,
+    horario:        <Horario {...shared} slots={slots} setSlots={setSlots} vehicles={vehicles} examDays={examDays} setExamDays={setExamDays}/>,
+    disponibilidad: <Disponibilidad {...shared} slots={slots} setSlots={setSlots}/>,
     profesores:     <Profesores {...shared} setProfessors={setProfessors}/>,
     vehiculos:      <Vehiculos user={user} vehicles={vehicles} setVehicles={setVehicles}/>,
     mensajes:       <Mensajes {...shared} slots={slots}/>,
