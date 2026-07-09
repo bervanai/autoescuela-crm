@@ -804,9 +804,12 @@ async function sendReminders() {
 // RESERVAR SLOT
 // ════════════════════════════════════════════════════════════
 
+let _slotSeq = 0;
 async function bookSlot(studentId, studentName, profId, slot) {
+  // Sufijo incremental: evita colisión de PK al reservar varias clases
+  // en el mismo milisegundo (atajo "3 clases")
   const newSlot = {
-    id:           `slot_${Date.now()}`,
+    id:           `slot_${Date.now()}_${(_slotSeq++).toString(36)}`,
     studentId,
     profId,
     date:         slot.date,
