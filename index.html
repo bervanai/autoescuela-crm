@@ -1847,8 +1847,30 @@ function defaultAvail(){
 }
 
 function Disponibilidad({user,professors,slots,setSlots}){
-  const [avail,setAvail]=useState(()=>load('crm_avail_v1',null)||defaultAvail());
+  // Con Supabase, la nube es la fuente: empezar vacío y esperar al pull
+  const [avail,setAvail]=useState(()=>load('crm_avail_v1',null)||(getSupabase()?{}:defaultAvail()));
   const [blocked,setBlocked]=useState(()=>load('crm_blocked_v1',{}));
+  const lastEdit=useRef(0);
+
+  // Refrescar cuando el pull de la nube actualiza localStorage (multi-dispositivo)
+  const fromPull=useRef(false);
+  useEffect(()=>{
+    const h=()=>{
+      if(Date.now()-lastEdit.current<8000)return; // no pisar una edición en curso
+      const a=load('crm_avail_v1',{})||{};
+      const b=load('crm_blocked_v1',{})||{};
+      setAvail(prev=>{
+        if(JSON.stringify(prev)===JSON.stringify(a))return prev;
+        fromPull.current=true;return a;
+      });
+      setBlocked(prev=>{
+        if(JSON.stringify(prev)===JSON.stringify(b))return prev;
+        fromPull.current=true;return b;
+      });
+    };
+    window.addEventListener('cloud-pull',h);
+    return()=>window.removeEventListener('cloud-pull',h);
+  },[]);
   const [selProf,setSelProf]=useState(user.role==='profesor'?user.id:professors[0]?.id);
   const [tab,setTab]=useState('disponibilidad'); // 'disponibilidad' | 'bloquear'
   const [saved,setSaved]=useState(false);
@@ -1862,6 +1884,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
 
   // ── Disponibilidad semanal ─────────────────────────
   function toggle(day,hour){
+    lastEdit.current=Date.now();
     setAvail(prev=>{
       const cur=(prev[viewProf]?.[day])||[];
       const next=cur.includes(hour)?cur.filter(h=>h!==hour):[...cur,hour].sort();
@@ -1870,6 +1893,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
     setSaved(false);
   }
   function setDay(day,on){
+    lastEdit.current=Date.now();
     setAvail(prev=>({...prev,[viewProf]:{...prev[viewProf],[day]:on?[...AVAIL_HOURS]:[]}}));
     setSaved(false);
   }
@@ -1889,6 +1913,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
   const nextWeek=getNextWeekDates();
 
   function toggleBlock(date,hour){
+    lastEdit.current=Date.now();
     const key=`${viewProf}_${date}_${hour}`;
     setBlocked(prev=>{
       const next={...prev};
@@ -1929,6 +1954,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
   }
   useEffect(()=>{
     if(firstRun.current){firstRun.current=false;return;}
+    if(fromPull.current){fromPull.current=false;return;} // vino de la nube: no re-subir
     const sb=getSupabase();
     const token=sessionStorage.getItem('crm_token');
     if(!sb||!token)return;
@@ -2671,7 +2697,11 @@ function App(){
       try{
         suppressPush.current=true;
         await loadFromSupabase();
-        if(!cancelled){setCloudStatus('ok');setLastCloudSync(new Date());}
+        if(!cancelled){
+          setCloudStatus('ok');setLastCloudSync(new Date());
+          // Avisar a los componentes que leen localStorage (Disponibilidad)
+          window.dispatchEvent(new Event('cloud-pull'));
+        }
       }catch(e){
         suppressPush.current=false;
         if(!cancelled)setCloudStatus('error');
