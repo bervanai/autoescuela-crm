@@ -52,6 +52,13 @@
     .modal-card{max-width:100%!important;width:calc(100vw - 24px)!important}
     /* Rejillas de 2 columnas → 1 en formularios */
     .form-2col{grid-template-columns:1fr!important}
+    /* Simulador del bot: chat arriba, panel de info abajo */
+    .sim-split{flex-direction:column!important}
+    .sim-side{width:100%!important}
+    .sim-chat{min-height:420px}
+    /* Rejilla de disponibilidad: scroll horizontal con ancho mínimo */
+    .avail-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .avail-grid{min-width:560px}
   }
 </style>
 <script>
@@ -1583,9 +1590,9 @@ function BotSim({students,slots,professors}){
         </div>
       </Card>
 
-      <div style={{display:'flex',gap:16,flex:1,minHeight:0}}>
+      <div className="sim-split" style={{display:'flex',gap:16,flex:1,minHeight:0}}>
         {/* Chat */}
-        <div style={{flex:1,display:'flex',flexDirection:'column',borderRadius:12,
+        <div className="sim-chat" style={{flex:1,display:'flex',flexDirection:'column',borderRadius:12,
           border:'1px solid #e2e8f0',overflow:'hidden',background:'#fff'}}>
           <div style={{background:'#075e54',padding:'12px 16px',display:'flex',alignItems:'center',gap:10}}>
             <div style={{width:38,height:38,borderRadius:'50%',background:'#128c7e',
@@ -1645,7 +1652,7 @@ function BotSim({students,slots,professors}){
           )}
         </div>
         {/* Flujo info */}
-        <div style={{width:260,display:'flex',flexDirection:'column',gap:12}}>
+        <div className="sim-side" style={{width:260,display:'flex',flexDirection:'column',gap:12}}>
           <Card style={{padding:16}}>
             <div style={{fontWeight:600,color:'#091426',fontSize:13,marginBottom:12}}>Flujo automático</div>
             {[
@@ -2127,7 +2134,8 @@ function Disponibilidad({user,professors,slots,setSlots}){
                 );
               })}
             </div>
-            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,overflow:'hidden'}}>
+            <div className="avail-scroll" style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,overflow:'hidden'}}>
+              <div className="avail-grid">
               <div style={{display:'grid',gridTemplateColumns:'72px repeat(6,1fr)',background:'#f8f9ff',borderBottom:'1px solid #e2e8f0'}}>
                 <div style={{padding:'10px 10px',fontSize:10,color:'#94a3b8',fontWeight:600}}>HORA</div>
                 {AVAIL_DAYS.map(d=>{
@@ -2168,6 +2176,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
                   })}
                 </div>
               ))}
+              </div>
             </div>
             <p style={{fontSize:12,color:'#94a3b8',marginTop:10,textAlign:'center'}}>
               <Icon name="info" size={13}/> Este horario se repite cada semana. Para bloquear horas puntuales usa la pestaña "Bloquear semana siguiente".
@@ -2184,7 +2193,8 @@ function Disponibilidad({user,professors,slots,setSlots}){
               Las horas marcadas como <strong>bloqueadas</strong> no estarán disponibles para reservar la semana siguiente.
               Las horas que ya tienen alumno aparecen en gris y no se pueden modificar.
             </div>
-            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,overflow:'hidden'}}>
+            <div className="avail-scroll" style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,overflow:'hidden'}}>
+              <div className="avail-grid">
               <div style={{display:'grid',gridTemplateColumns:'72px repeat(6,1fr)',background:'#f8f9ff',borderBottom:'1px solid #e2e8f0'}}>
                 <div style={{padding:'10px 10px',fontSize:10,color:'#94a3b8',fontWeight:600}}>HORA</div>
                 {nextWeek.map(wd=>(
@@ -2219,6 +2229,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
                   })}
                 </div>
               ))}
+              </div>
             </div>
             <div style={{display:'flex',gap:16,marginTop:10,justifyContent:'center',fontSize:12,color:'#64748b'}}>
               <span>📅 Reservado por alumno</span>
