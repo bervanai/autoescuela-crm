@@ -2839,12 +2839,24 @@ function App(){
         await loadFromSupabase();
         if(!cancelled){
           setCloudStatus('ok');setLastCloudSync(new Date());
-          // Avisar a los componentes que leen localStorage (Disponibilidad)
           window.dispatchEvent(new Event('cloud-pull'));
+          // Renovar la sesión (deslizante 30 días; el servidor lo throttlea)
+          const sb=getSupabase(),tk=sessionStorage.getItem('crm_token');
+          if(sb&&tk)sb.rpc('touch_session',{p_token:tk}).catch(()=>{});
         }
       }catch(e){
         suppressPush.current=false;
-        if(!cancelled)setCloudStatus('error');
+        if(!cancelled){
+          // Sesión caducada → al login al instante, sin datos viejos colgados
+          if((e.message||'').includes('SESION_INVALIDA')||(e.message||'').includes('caducada')){
+            sessionStorage.removeItem('crm_token');
+            setCloudStatus('off');
+            alert('Tu sesión ha caducado. Vuelve a entrar para ver los datos actualizados.');
+            logout();
+          } else {
+            setCloudStatus('error');
+          }
+        }
       }
     };
     pull();                              // al entrar: descargar el estado real
@@ -2874,6 +2886,12 @@ function App(){
         lastPushed.current=snapshot;
         setCloudStatus('ok');setLastCloudSync(new Date());
       }catch(e){
+        // Sesión caducada: no reintentar ni machacar nada, al login
+        if((e.message||'').includes('SESION_INVALIDA')||(e.message||'').includes('caducada')){
+          sessionStorage.removeItem('crm_token');
+          setCloudStatus('off');
+          return;
+        }
         setCloudStatus('error');
         if(retry>0){
           // Mantener el pull a raya mientras reintentamos (no pisar la edición)

@@ -3,7 +3,8 @@
 // Uso: node build.js   (con @babel/core y @babel/plugin-transform-react-jsx en /tmp)
 const fs = require('fs');
 const path = require('path');
-const babel = require(process.env.BABEL_CORE || '/tmp/node_modules/@babel/core');
+const BABEL_DIR = process.env.BABEL_DIR || '/tmp/crmbuild/node_modules';
+const babel = require(BABEL_DIR + '/@babel/core');
 
 const src = fs.readFileSync(path.join(__dirname, 'index.src.html'), 'utf8');
 const m = src.match(/<script type="text\/babel">([\s\S]*?)<\/script>/);
@@ -12,7 +13,7 @@ if (!m) { console.error('No se encontró el bloque <script type="text/babel">');
 const compiled = babel.transformSync(m[1], {
   // runtime 'classic' → usa React.createElement (React global del CDN),
   // NO el runtime automático que necesitaría un bundler
-  plugins: [[require('/tmp/node_modules/@babel/plugin-transform-react-jsx'), { runtime: 'classic' }]],
+  plugins: [[require(BABEL_DIR + '/@babel/plugin-transform-react-jsx'), { runtime: 'classic' }]],
   compact: false,
   comments: false,
 }).code;
