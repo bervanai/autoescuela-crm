@@ -61,7 +61,18 @@ const SANDBOX_NUM = process.env.TWILIO_SANDBOX_NUM || 'whatsapp:+14155238886';
 // que no puede enviar WhatsApp — evita crash-loop en Railway antes de
 // configurar las variables secretas.
 const client = (ACCOUNT_SID && AUTH_TOKEN) ? twilio(ACCOUNT_SID, AUTH_TOKEN) : null;
-if (!client) console.log('⚠️  Sin credenciales Twilio → envío de WhatsApp desactivado');
+
+// ── Meta WhatsApp Cloud API (gratis, lo controla el dueño) ─
+const META_TOKEN        = process.env.META_TOKEN;                 // token de acceso
+const META_PHONE_ID     = process.env.META_PHONE_NUMBER_ID;       // ID del número
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'autoescuela_exit_verify';
+const META_API_VER      = process.env.META_API_VERSION || 'v21.0';
+const USE_META = !!(META_TOKEN && META_PHONE_ID);
+
+// Proveedor activo: Meta si está configurado, si no Twilio, si no ninguno
+const PROVIDER = USE_META ? 'meta' : (client ? 'twilio' : 'none');
+console.log(`📡 Proveedor WhatsApp: ${PROVIDER}`);
+if (PROVIDER === 'none') console.log('⚠️  Sin proveedor WhatsApp → envío desactivado');
 
 // ── Notificaciones ────────────────────────────────────────
 const NOTIFY_ADMIN = process.env.NOTIFY_ADMIN || '+34644299702';
@@ -623,15 +634,67 @@ function parseBookingText(text) {
 
 async function sendWA(to, body) {
   to = normalizePhone(to);
-  if (!client) {
-    console.log(`🚫 (Twilio no configurado) mensaje NO enviado a ${to}: ${body.substring(0, 60).replace(/\n/g, ' ')}`);
-    return;
+  if (PROVIDER === 'meta')   return sendWA_meta(to, body);
+  if (PROVIDER === 'twilio') return sendWA_twilio(to, body);
+  console.log(`🚫 (sin proveedor) mensaje NO enviado a ${to}: ${body.substring(0, 60).replace(/\n/g, ' ')}`);
+}
+
+// ── Envío por Meta Cloud API ──
+async function sendWA_meta(to, body) {
+  const num = String(to).replace(/^\+/, ''); // Meta quiere el número sin '+'
+  try {
+    const r = await fetch(`https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${META_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: num,
+        type: 'text',
+        text: { preview_url: false, body },
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      console.error(`❌ Meta → ${to}: ${r.status} ${err.substring(0, 200)}`);
+      return;
+    }
+    console.log(`📤 (meta) → ${to}: ${body.substring(0, 80).replace(/\n/g, ' ')}`);
+  } catch (e) {
+    console.error(`❌ Meta → ${to}:`, e.message);
   }
+}
+
+// ── Envío de PLANTILLA por Meta (para mensajes fuera de la ventana 24h) ──
+// components: array de parámetros de la plantilla (opcional)
+async function sendTemplateMeta(to, templateName, params = [], lang = 'es') {
+  if (PROVIDER !== 'meta') return sendWA(to, '(plantilla no disponible sin Meta)');
+  const num = String(normalizePhone(to)).replace(/^\+/, '');
+  const body = {
+    messaging_product: 'whatsapp', to: num, type: 'template',
+    template: {
+      name: templateName,
+      language: { code: lang },
+      ...(params.length ? { components: [{ type: 'body', parameters: params.map(t => ({ type: 'text', text: String(t) })) }] } : {}),
+    },
+  };
+  try {
+    const r = await fetch(`https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${META_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) console.error(`❌ Meta plantilla → ${to}: ${r.status} ${(await r.text()).substring(0, 200)}`);
+    else console.log(`📤 (meta·plantilla ${templateName}) → ${to}`);
+  } catch (e) { console.error(`❌ Meta plantilla → ${to}:`, e.message); }
+}
+
+// ── Envío por Twilio ──
+async function sendWA_twilio(to, body) {
   try {
     await client.messages.create({ from: SANDBOX_NUM, to: `whatsapp:${to}`, body });
-    console.log(`📤 → ${to}: ${body.substring(0, 80).replace(/\n/g, ' ')}`);
+    console.log(`📤 (twilio) → ${to}: ${body.substring(0, 80).replace(/\n/g, ' ')}`);
   } catch (e) {
-    console.error(`❌ Error → ${to}:`, e.message);
+    console.error(`❌ Twilio → ${to}:`, e.message);
   }
 }
 
@@ -850,14 +913,57 @@ function twilioSignatureOk(req) {
   }
 }
 
+// ── Verificación del webhook de Meta (GET) ──
+// Meta llama una vez con hub.challenge para confirmar la URL.
+app.get('/bot', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    console.log('✅ Webhook de Meta verificado');
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+});
+
+// Extrae { from, body } de una petición entrante (formato Meta o Twilio)
+function parseIncoming(reqBody) {
+  // Meta: { entry:[{ changes:[{ value:{ messages:[{ from, text:{body}, type }] } }] }] }
+  const change = reqBody?.entry?.[0]?.changes?.[0]?.value;
+  const msg = change?.messages?.[0];
+  if (msg) {
+    // Solo mensajes de texto; ignorar status (delivered/read) y otros tipos
+    const text = msg.text?.body ?? msg.button?.text ?? msg.interactive?.button_reply?.title ?? '';
+    return { from: '+' + String(msg.from).replace(/^\+/, ''), body: String(text).trim(), provider: 'meta' };
+  }
+  // Twilio: { From:'whatsapp:+34...', Body:'...' }
+  if (reqBody?.From) {
+    return { from: String(reqBody.From).replace('whatsapp:', ''), body: String(reqBody.Body || '').trim(), provider: 'twilio' };
+  }
+  return null;
+}
+
 app.post('/bot', async (req, res) => {
-  if (!twilioSignatureOk(req)) {
+  const isMeta = !!req.body?.entry;
+  // La firma de Twilio solo se valida para peticiones de Twilio
+  if (!isMeta && !twilioSignatureOk(req)) {
     console.warn('🚫 Petición al webhook con firma inválida — rechazada');
     return res.status(403).send('Forbidden');
   }
-  const from = (req.body.From || '').replace('whatsapp:', '') || '';
-  const body = (req.body.Body || '').trim();
-  console.log(`\n📥 ${from}: "${body}"`);
+  // Meta espera 200 rápido; respondemos ya y procesamos después
+  if (isMeta) res.sendStatus(200);
+
+  const parsed = parseIncoming(req.body);
+  if (!parsed || !parsed.body) {           // status update u otro evento: ignorar
+    if (!isMeta) done();
+    return;
+  }
+  const from = parsed.from;
+  const body = parsed.body;
+  console.log(`\n📥 (${parsed.provider}) ${from}: "${body}"`);
+
+  // Helper para cerrar la petición según el proveedor (Meta ya respondió arriba)
+  const done = () => { if (!isMeta) res.send('<Response></Response>'); };
 
   let state = pending[from];
 
@@ -867,7 +973,7 @@ app.post('/bot', async (req, res) => {
     const st = allStudents.find(s => s.phone === from && s.active);
     if (!st) {
       await sendWA(from, `Hola 👋 Soy el asistente de *${SCHOOL_NAME}*. No encuentro tu número en el sistema — contacta con la autoescuela para darte de alta.`);
-      res.send('<Response></Response>');
+      done();
       return;
     }
 
@@ -886,7 +992,7 @@ app.post('/bot', async (req, res) => {
           `\n\nSi quieres anular alguna, responde *cancelar*.`
         );
       }
-      res.send('<Response></Response>');
+      done();
       return;
     }
 
@@ -895,7 +1001,7 @@ app.post('/bot', async (req, res) => {
       const mine = await upcomingSlotsFor(st.id);
       if (!mine.length) {
         await sendWA(from, `No tienes clases reservadas que cancelar 👍`);
-        res.send('<Response></Response>');
+        done();
         return;
       }
       pending[from] = {
@@ -911,7 +1017,7 @@ app.post('/bot', async (req, res) => {
         mine.map((s, i) => `*${i + 1}.* ${slotLabel(s)}`).join('\n') +
         `\n\n¿Cuál quieres cancelar? Responde con el número, o *listo* para salir.`
       );
-      res.send('<Response></Response>');
+      done();
       return;
     }
 
@@ -919,7 +1025,7 @@ app.post('/bot', async (req, res) => {
     const free = await nextFreeSlots(profId, 8, nextMon);
     if (!free.length) {
       await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
-      res.send('<Response></Response>');
+      done();
       return;
     }
 
@@ -933,7 +1039,7 @@ app.post('/bot', async (req, res) => {
 
     await sendWA(from, msg);
     pending[from] = makeSuggestState({ ...st, profId }, free, true);
-    res.send('<Response></Response>');
+    done();
     return;
   }
 
@@ -941,7 +1047,7 @@ app.post('/bot', async (req, res) => {
   if (Date.now() > state.expires) {
     delete pending[from];
     await sendWA(from, `El plazo de reserva ha cerrado. Te contactaremos el próximo martes. ¡Hasta pronto! 👋`);
-    res.send('<Response></Response>');
+    done();
     return;
   }
 
@@ -950,7 +1056,7 @@ app.post('/bot', async (req, res) => {
     if (isDone(body) || isNo(body)) {
       delete pending[from];
       await sendWA(from, `De acuerdo, no cancelo nada. ¡Hasta pronto! 👋`);
-      res.send('<Response></Response>');
+      done();
       return;
     }
     const n = parseInt(norm(body), 10);
@@ -965,7 +1071,7 @@ app.post('/bot', async (req, res) => {
     } else {
       await sendWA(from, `Responde con el número de la clase (1-${state.slots.length}), o *listo* para salir.`);
     }
-    res.send('<Response></Response>');
+    done();
     return;
   }
 
@@ -982,7 +1088,7 @@ app.post('/bot', async (req, res) => {
       delete pending[from];
       await sendWA(from, `¡Perfecto! Te esperamos. 🚗`);
     }
-    res.send('<Response></Response>');
+    done();
     return;
   }
 
@@ -997,7 +1103,7 @@ app.post('/bot', async (req, res) => {
           `\n\nTe recordaremos cada una 48h antes.`
         : '';
       await sendWA(from, `¡Perfecto ${state.studentName}!${resumen} 🚗`);
-      res.send('<Response></Response>');
+      done();
       return;
     }
 
@@ -1024,7 +1130,7 @@ app.post('/bot', async (req, res) => {
       }
       if (!picked.length) {
         await sendWA(from, `No quedan huecos disponibles la semana que viene 😔 Llama a la autoescuela.`);
-        res.send('<Response></Response>');
+        done();
         return;
       }
       picked.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
@@ -1040,7 +1146,7 @@ app.post('/bot', async (req, res) => {
         `✅ ¡Hechas! He reservado tus ${picked.length} clases:\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
         `¿Quieres alguna más? Responde *SÍ*, otro número, o *listo* para terminar.`
       );
-      res.send('<Response></Response>');
+      done();
       return;
     }
 
@@ -1051,13 +1157,13 @@ app.post('/bot', async (req, res) => {
         if (!fresh.length) {
           delete pending[from];
           await sendWA(from, `Lo siento, ese hueco acaba de ocuparse y no hay más disponibles. Llama a la autoescuela.`);
-          res.send('<Response></Response>');
+          done();
           return;
         }
         state.slots = fresh; state.idx = 0;
         const ns = fresh[0];
         await sendWA(from, `Ese hueco acaba de ocuparse 😅\n\nTe propongo:\n📅 *${ns.dayName} ${formatDate(ns.date)} a las ${ns.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`);
-        res.send('<Response></Response>');
+        done();
         return;
       }
 
@@ -1082,7 +1188,7 @@ app.post('/bot', async (req, res) => {
       if (!state.slots.length) {
         delete pending[from];
         await sendWA(from, `No hay más huecos disponibles en los próximos días. Llama a la autoescuela. 📞`);
-        res.send('<Response></Response>');
+        done();
         return;
       }
       const next = state.slots[state.idx];
@@ -1174,11 +1280,11 @@ app.post('/bot', async (req, res) => {
         await sendWA(from, `Responde *SÍ* para confirmar, *NO* para ver otro hueco, o pregúntame por una hora (ej: *"¿el martes a las 10 está libre?"*) 😊`);
       }
     }
-    res.send('<Response></Response>');
+    done();
     return;
   }
 
-  res.send('<Response></Response>');
+  done();
 });
 
 // ════════════════════════════════════════════════════════════
@@ -1253,6 +1359,7 @@ app.get('/status', async (req, res) => {
   const slots    = await loadSlots();
   res.json({
     modo:            USE_SUPABASE ? 'supabase' : 'json_local',
+    whatsapp:        PROVIDER,
     alumnos_activos: students.filter(s => s.active).length,
     total_slots:     slots.length,
     pendientes_bot:  Object.keys(pending).length,
