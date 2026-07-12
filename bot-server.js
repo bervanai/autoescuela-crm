@@ -67,6 +67,9 @@ const META_TOKEN        = process.env.META_TOKEN;                 // token de ac
 const META_PHONE_ID     = process.env.META_PHONE_NUMBER_ID;       // ID del número
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'autoescuela_exit_verify';
 const META_API_VER      = process.env.META_API_VERSION || 'v21.0';
+// Nombres de las plantillas aprobadas en Meta (para mensajes que INICIA el bot)
+const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'propuesta_clase';
+const TPL_RECORDATORIO = process.env.META_TPL_RECORDATORIO || 'recordatorio_clase';
 const USE_META = !!(META_TOKEN && META_PHONE_ID);
 
 // Proveedor activo: Meta si está configurado, si no Twilio, si no ninguno
@@ -698,6 +701,14 @@ async function sendWA_twilio(to, body) {
   }
 }
 
+// ── Mensaje que INICIA el bot (campaña, recordatorio) ──
+// Meta exige plantilla aprobada fuera de la ventana de 24h. En Meta se envía
+// como plantilla; en Twilio (o dentro de la ventana) va como texto libre.
+async function sendBusinessInitiated(to, templateName, params, fallbackText) {
+  if (PROVIDER === 'meta') return sendTemplateMeta(to, templateName, params);
+  return sendWA(to, fallbackText);
+}
+
 async function notifyProf(profId, body) {
   // Buscar el teléfono real del profesor; si no tiene, avisar al admin
   let phone = null;
@@ -808,7 +819,9 @@ async function sendBookingRequests(force = false) {
         `Responde *SÍ*, un número (ej: *3* clases de golpe), o *NO* para ver más huecos.\n` +
         urgencia;
 
-    await sendWA(st.phone, msg);
+    // Mensaje que inicia el bot → plantilla en Meta, texto libre en Twilio
+    const cita = `${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`;
+    await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name, cita], msg);
     pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
     sent++;
   }
@@ -839,13 +852,14 @@ async function sendReminders() {
     const st = students.find(s => s.id === studentId);
     if (!st?.phone) continue;
 
+    const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
     const msg =
       `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
-      `Hola ${st.name}, tienes clase el *${slot.dayName || formatDate(slot.date)}* a las *${slot.time}h*.\n\n` +
+      `Hola ${st.name}, tienes clase el *${cita}*.\n\n` +
       `Si no puedes venir, responde *CANCELAR*.\n` +
       `Si no respondes, la clase se mantiene. ✅`;
 
-    await sendWA(st.phone, msg);
+    await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
     await updateSlot(slot.id, { reminderSent: true });
 
     const profId = slot.profId ?? slot.prof_id;
@@ -1408,7 +1422,8 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
     `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
     `⚠️ El plazo cierra el jueves.`;
 
-  await sendWA(st.phone, msg);
+  const cita = `${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`;
+  await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name, cita], msg);
   pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
 
   console.log(`📤 CRM → mensaje manual enviado a ${st.name}`);
@@ -1426,13 +1441,14 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
   const st = students.find(s => s.id === studentId);
   if (!st?.phone) return res.status(400).json({ error: 'Alumno sin teléfono' });
 
+  const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
   const msg =
     `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
-    `Hola ${st.name}, tienes clase el *${slot.dayName || formatDate(slot.date)}* a las *${slot.time}h*.\n\n` +
+    `Hola ${st.name}, tienes clase el *${cita}*.\n\n` +
     `Si no puedes venir, responde *CANCELAR*.\n` +
     `Si no respondes, la clase se mantiene. ✅`;
 
-  await sendWA(st.phone, msg);
+  await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
   await updateSlot(slot.id, { reminderSent: true });
 
   const profId = slot.profId ?? slot.prof_id;
