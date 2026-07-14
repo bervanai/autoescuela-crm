@@ -581,7 +581,7 @@ function calcDuration(profId, date, time, studentVehicleType, allSlots){
 
 function StudentModal({student,professors,onSave,onClose}){
   const [f,setF]=useState(student||{name:'',phone:'',profId:professors[0]?.id||'',
-    license:'B',vehicleType:'manual',numClases:0,bono:'Bono 10',tasasPagadas:false,active:true});
+    license:'B',vehicleType:'manual',fase:'pista',numClases:0,bono:'Bono 10',tasasPagadas:false,active:true});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
   const vt=getVehicleType(f.vehicleType);
   return(
@@ -592,6 +592,22 @@ function StudentModal({student,professors,onSave,onClose}){
         <select className={inp} value={f.profId} onChange={e=>s('profId',e.target.value)}>
           {professors.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+      </F>
+      {/* Fase: Pista o Circulación */}
+      <F label="Fase de aprendizaje">
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+          {[{id:'pista',label:'Pista',icon:'fence',color:'#b45309'},
+            {id:'circulacion',label:'Circulación',icon:'directions_car',color:'#0e6856'}].map(fx=>(
+            <button key={fx.id} type="button" onClick={()=>s('fase',fx.id)}
+              style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,
+                border:'2px solid',cursor:'pointer',fontSize:13,fontWeight:600,transition:'all .15s',
+                borderColor:f.fase===fx.id?fx.color:'#e2e8f0',
+                background:f.fase===fx.id?fx.color+'15':'#fff',
+                color:f.fase===fx.id?fx.color:'#64748b'}}>
+              <Icon name={fx.icon} size={16}/>{fx.label}
+            </button>
+          ))}
+        </div>
       </F>
       {/* Tipo de vehículo */}
       <F label="Tipo de vehículo (afecta duración de clase)">
@@ -740,7 +756,7 @@ function Alumnos({students,setStudents,professors,user}){
         <table style={{width:'100%',fontSize:13,borderCollapse:'collapse',minWidth:720}}>
           <thead>
             <tr style={{background:'#f8fafc'}}>
-              {['Alumno','Teléfono','Profesor','Carnet','Clases','Bono','Tasas','Examen','Bot WhatsApp',''].map(h=>(
+              {['Alumno','Teléfono','Profesor','Fase','Carnet','Clases','Bono','Tasas','Examen','Bot WhatsApp',''].map(h=>(
                 <th key={h} style={{textAlign:'left',padding:'10px 16px',fontSize:11,
                   fontWeight:600,color:'#64748b',borderBottom:'1px solid #e2e8f0'}}>{h}</th>
               ))}
@@ -786,6 +802,9 @@ function Alumnos({students,setStudents,professors,user}){
                   </td>
                   <td style={{padding:'10px 16px',color:'#475569'}}>{stu.phone}</td>
                   <td style={{padding:'10px 16px'}}>{prof&&<Badge label={prof.name} color={prof.color}/>}</td>
+                  <td style={{padding:'10px 16px'}}>
+                    <Badge label={stu.fase==='circulacion'?'Circulación':'Pista'} color={stu.fase==='circulacion'?'#0e6856':'#b45309'}/>
+                  </td>
                   <td style={{padding:'10px 16px'}}><Badge label={stu.license} color="#64748b"/></td>
                   <td style={{padding:'10px 16px',fontWeight:700,color:'#091426'}}>{stu.numClases}</td>
                   <td style={{padding:'10px 16px',color:'#475569'}}>{stu.bono}</td>
@@ -898,7 +917,7 @@ function Alumnos({students,setStudents,professors,user}){
                 </tr>
               );
             })}
-            {list.length===0&&<tr><td colSpan={9} style={{padding:32,textAlign:'center',color:'#94a3b8'}}>No hay alumnos</td></tr>}
+            {list.length===0&&<tr><td colSpan={11} style={{padding:32,textAlign:'center',color:'#94a3b8'}}>No hay alumnos</td></tr>}
           </tbody>
         </table>
         </div>
@@ -2647,6 +2666,8 @@ function App(){
       bot_active:s.botActive!==false,
       exam_date:s.examDate||s.exam_date||null,
       exam_result:s.examResult||s.exam_result||null,
+      fase:s.fase||'pista',
+      notes:s.notes||null,
     });
     const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
 
@@ -2696,7 +2717,7 @@ function App(){
     }
     // Resto de tablas (sin clases) por reemplazo
     const normProf=p=>({id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false});
-    const normStu=s=>({id:s.id,name:s.name,phone:s.phone||null,prof_id:s.profId||s.prof_id||null,license:s.license||'B',vehicle_type:s.vehicleType||s.vehicle_type||'manual',num_clases:s.numClases??s.num_clases??0,bono:s.bono||null,tasas_pagadas:!!s.tasasPagadas,active:s.active!==false,bot_active:s.botActive!==false,exam_date:s.examDate||s.exam_date||null,exam_result:s.examResult||s.exam_result||null});
+    const normStu=s=>({id:s.id,name:s.name,phone:s.phone||null,prof_id:s.profId||s.prof_id||null,license:s.license||'B',vehicle_type:s.vehicleType||s.vehicle_type||'manual',num_clases:s.numClases??s.num_clases??0,bono:s.bono||null,tasas_pagadas:!!s.tasasPagadas,active:s.active!==false,bot_active:s.botActive!==false,exam_date:s.examDate||s.exam_date||null,exam_result:s.examResult||s.exam_result||null,fase:s.fase||'pista',notes:s.notes||null});
     const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
     const {error}=await sb.rpc('crm_save_data',{
       p_token:token,
@@ -2740,6 +2761,7 @@ function App(){
       numClases:s.num_clases||0,bono:s.bono||'Sin bono',
       tasasPagadas:!!s.tasas_pagadas,active:s.active!==false,
       botActive:s.bot_active!==false,
+      fase:s.fase||'pista',notes:s.notes||'',
       examDate:s.exam_date||'',examResult:s.exam_result||null,
     })));
     setVehicles((d.vehicles||[]).map(v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'})));

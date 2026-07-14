@@ -335,6 +335,7 @@ function normalizeStudent(row) {
     botActive:   row.bot_active,
     examDate:    row.exam_date,
     examResult:  row.exam_result,
+    fase:        row.fase,
     // campos JSON legacy (por si acaso)
     ...(row.profId      !== undefined ? { profId:    row.profId }    : {}),
     ...(row.botActive   !== undefined ? { botActive: row.botActive } : {}),

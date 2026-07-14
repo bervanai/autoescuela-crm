@@ -1122,6 +1122,7 @@ function StudentModal({
     profId: professors[0]?.id || '',
     license: 'B',
     vehicleType: 'manual',
+    fase: 'pista',
     numClases: 0,
     bono: 'Bono 10',
     tasasPagadas: false,
@@ -1157,6 +1158,46 @@ function StudentModal({
     key: p.id,
     value: p.id
   }, p.name)))), React.createElement(F, {
+    label: "Fase de aprendizaje"
+  }, React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 8
+    }
+  }, [{
+    id: 'pista',
+    label: 'Pista',
+    icon: 'fence',
+    color: '#b45309'
+  }, {
+    id: 'circulacion',
+    label: 'Circulación',
+    icon: 'directions_car',
+    color: '#0e6856'
+  }].map(fx => React.createElement("button", {
+    key: fx.id,
+    type: "button",
+    onClick: () => s('fase', fx.id),
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '8px 12px',
+      borderRadius: 8,
+      border: '2px solid',
+      cursor: 'pointer',
+      fontSize: 13,
+      fontWeight: 600,
+      transition: 'all .15s',
+      borderColor: f.fase === fx.id ? fx.color : '#e2e8f0',
+      background: f.fase === fx.id ? fx.color + '15' : '#fff',
+      color: f.fase === fx.id ? fx.color : '#64748b'
+    }
+  }, React.createElement(Icon, {
+    name: fx.icon,
+    size: 16
+  }), fx.label)))), React.createElement(F, {
     label: "Tipo de vehículo (afecta duración de clase)"
   }, React.createElement("div", {
     style: {
@@ -1477,7 +1518,7 @@ function Alumnos({
     style: {
       background: '#f8fafc'
     }
-  }, ['Alumno', 'Teléfono', 'Profesor', 'Carnet', 'Clases', 'Bono', 'Tasas', 'Examen', 'Bot WhatsApp', ''].map(h => React.createElement("th", {
+  }, ['Alumno', 'Teléfono', 'Profesor', 'Fase', 'Carnet', 'Clases', 'Bono', 'Tasas', 'Examen', 'Bot WhatsApp', ''].map(h => React.createElement("th", {
     key: h,
     style: {
       textAlign: 'left',
@@ -1595,6 +1636,13 @@ function Alumnos({
     }, prof && React.createElement(Badge, {
       label: prof.name,
       color: prof.color
+    })), React.createElement("td", {
+      style: {
+        padding: '10px 16px'
+      }
+    }, React.createElement(Badge, {
+      label: stu.fase === 'circulacion' ? 'Circulación' : 'Pista',
+      color: stu.fase === 'circulacion' ? '#0e6856' : '#b45309'
     })), React.createElement("td", {
       style: {
         padding: '10px 16px'
@@ -1848,7 +1896,7 @@ function Alumnos({
       size: 16
     }))))));
   }), list.length === 0 && React.createElement("tr", null, React.createElement("td", {
-    colSpan: 9,
+    colSpan: 11,
     style: {
       padding: 32,
       textAlign: 'center',
@@ -5547,7 +5595,9 @@ function App() {
       active: s.active !== false,
       bot_active: s.botActive !== false,
       exam_date: s.examDate || s.exam_date || null,
-      exam_result: s.examResult || s.exam_result || null
+      exam_result: s.examResult || s.exam_result || null,
+      fase: s.fase || 'pista',
+      notes: s.notes || null
     });
     const normVeh = v => ({
       id: v.id,
@@ -5629,7 +5679,9 @@ function App() {
       active: s.active !== false,
       bot_active: s.botActive !== false,
       exam_date: s.examDate || s.exam_date || null,
-      exam_result: s.examResult || s.exam_result || null
+      exam_result: s.examResult || s.exam_result || null,
+      fase: s.fase || 'pista',
+      notes: s.notes || null
     });
     const normVeh = v => ({
       id: v.id,
@@ -5691,6 +5743,8 @@ function App() {
       tasasPagadas: !!s.tasas_pagadas,
       active: s.active !== false,
       botActive: s.bot_active !== false,
+      fase: s.fase || 'pista',
+      notes: s.notes || '',
       examDate: s.exam_date || '',
       examResult: s.exam_result || null
     })));
