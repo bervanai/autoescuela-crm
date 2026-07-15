@@ -4298,7 +4298,33 @@ function Disponibilidad({
 }) {
   const [avail, setAvail] = useState(() => load('crm_avail_v1', null) || (getSupabase() ? {} : defaultAvail()));
   const [blocked, setBlocked] = useState(() => load('crm_blocked_v1', {}));
+  const [pistaHrs, setPistaHrs] = useState(() => load('crm_pista_hours_v1', {}) || {});
+  const [pistaMsg, setPistaMsg] = useState('');
   const lastEdit = useRef(0);
+  const togglePista = (day, hour) => {
+    lastEdit.current = Date.now();
+    setPistaHrs(prev => {
+      const cur = prev[day] || [];
+      const next = cur.includes(hour) ? cur.filter(h => h !== hour) : [...cur, hour].sort();
+      const upd = {
+        ...prev,
+        [day]: next
+      };
+      save('crm_pista_hours_v1', upd);
+      const sb = getSupabase(),
+        tk = sessionStorage.getItem('crm_token');
+      if (sb && tk) {
+        sb.rpc('crm_set_pista_hours', {
+          p_token: tk,
+          p_hours: upd
+        }).then(({
+          error
+        }) => setPistaMsg(error ? '❌ ' + error.message : '✅ Guardado en la nube')).catch(e => setPistaMsg('❌ ' + e.message));
+        setTimeout(() => setPistaMsg(''), 2000);
+      }
+      return upd;
+    });
+  };
   const fromPull = useRef(false);
   useEffect(() => {
     const h = () => {
@@ -4315,6 +4341,8 @@ function Disponibilidad({
         fromPull.current = true;
         return b;
       });
+      const ph = load('crm_pista_hours_v1', {}) || {};
+      setPistaHrs(prev => JSON.stringify(prev) === JSON.stringify(ph) ? prev : ph);
     };
     window.addEventListener('cloud-pull', h);
     return () => window.removeEventListener('cloud-pull', h);
@@ -4591,7 +4619,11 @@ function Disponibilidad({
     id: 'bloquear',
     icon: 'block',
     label: `Bloquear semana siguiente${totalBlocked > 0 ? ` (${totalBlocked} bloqueadas)` : ''}`
-  }].map(t => React.createElement("button", {
+  }, ...(isAdmin ? [{
+    id: 'pista',
+    icon: 'fence',
+    label: 'Horario de pista'
+  }] : [])].map(t => React.createElement("button", {
     key: t.id,
     onClick: () => setTab(t.id),
     style: {
@@ -4894,7 +4926,127 @@ function Disponibilidad({
     style: {
       color: '#94a3b8'
     }
-  }, "□ Libre")))));
+  }, "□ Libre"))), tab === 'pista' && isAdmin && React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      background: '#fff7ed',
+      border: '1px solid #fed7aa',
+      borderRadius: 10,
+      padding: '10px 16px',
+      marginBottom: 16,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      fontSize: 13,
+      color: '#9a3412'
+    }
+  }, React.createElement(Icon, {
+    name: "fence",
+    size: 16
+  }), "Marca las horas en que la ", React.createElement("strong", null, "pista (circuito)"), " está disponible. El bot solo ofrecerá pista a los alumnos en fase Pista dentro de estas horas. Los de Circulación no tienen esta restricción. Se guarda en la nube al instante.", pistaMsg && React.createElement("span", {
+    style: {
+      marginLeft: 'auto',
+      fontWeight: 700
+    }
+  }, pistaMsg)), React.createElement("div", {
+    className: "avail-scroll",
+    style: {
+      background: '#fff',
+      border: '1px solid #e2e8f0',
+      borderRadius: 12,
+      overflow: 'hidden'
+    }
+  }, React.createElement("div", {
+    className: "avail-grid"
+  }, React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '72px repeat(6,1fr)',
+      background: '#fff7ed',
+      borderBottom: '1px solid #e2e8f0'
+    }
+  }, React.createElement("div", {
+    style: {
+      padding: '10px 10px',
+      fontSize: 10,
+      color: '#94a3b8',
+      fontWeight: 600
+    }
+  }, "HORA"), AVAIL_DAYS.map(d => {
+    const cnt = (pistaHrs[d.key] || []).length;
+    return React.createElement("div", {
+      key: d.key,
+      style: {
+        padding: '7px 4px',
+        textAlign: 'center',
+        borderLeft: '1px solid #e2e8f0'
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 600,
+        color: '#091426'
+      }
+    }, d.label), React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: cnt ? '#c2410c' : '#cbd5e1'
+      }
+    }, cnt, " h"));
+  })), AVAIL_HOURS.map((hour, hi) => React.createElement("div", {
+    key: hour,
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '72px repeat(6,1fr)',
+      borderBottom: hi < AVAIL_HOURS.length - 1 ? '1px solid #f1f5f9' : 'none',
+      background: hi % 2 === 0 ? '#fff' : '#fffaf5'
+    }
+  }, React.createElement("div", {
+    style: {
+      padding: '8px 10px',
+      fontSize: 12,
+      fontWeight: 500,
+      color: '#64748b',
+      display: 'flex',
+      alignItems: 'center'
+    }
+  }, hour), AVAIL_DAYS.map(d => {
+    const on = (pistaHrs[d.key] || []).includes(hour);
+    return React.createElement("div", {
+      key: d.key,
+      style: {
+        borderLeft: '1px solid #f1f5f9',
+        padding: 3,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }
+    }, React.createElement("button", {
+      onClick: () => togglePista(d.key, hour),
+      style: {
+        width: '100%',
+        height: 32,
+        borderRadius: 6,
+        border: '2px solid',
+        cursor: 'pointer',
+        transition: 'all .15s',
+        fontWeight: 700,
+        fontSize: 11,
+        borderColor: on ? '#ea580c' : '#e2e8f0',
+        background: on ? '#ea580c' : 'transparent',
+        color: on ? '#fff' : '#cbd5e1'
+      }
+    }, on ? '✓' : ''));
+  }))))), React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: '#94a3b8',
+      marginTop: 10,
+      textAlign: 'center'
+    }
+  }, React.createElement(Icon, {
+    name: "info",
+    size: 13
+  }), " Si no marcas ninguna hora, la pista no tendrá restricción (el bot ofrecerá pista en el horario normal del profesor)."))));
 }
 function Configuracion({
   professors,
@@ -5797,6 +5949,8 @@ function App() {
     const examArr = (d.exam_days || []).map(x => String(x).slice(0, 10));
     save('crm_exam_days_v3', examArr);
     setExamDays(examArr);
+    save('crm_pista_hours_v1', d.pista_hours && typeof d.pista_hours === 'object' ? d.pista_hours : {});
+    window.dispatchEvent(new Event('cloud-pull'));
     return {
       profesores: d.professors?.length || 0,
       alumnos: d.students?.length || 0,

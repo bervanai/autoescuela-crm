@@ -296,6 +296,19 @@ async function loadExamDays() {
   return [];
 }
 
+// ── Horario de pista: {lun:[horas], mar:[...]} ── (null = sin restricción)
+async function loadPistaHours() {
+  if (USE_SUPABASE) {
+    const q = supabase.from('school_config').select('extra_config');
+    if (SCHOOL_ID) q.eq('school_id', SCHOOL_ID);
+    const { data, error } = await q;
+    if (error) { console.error('Supabase loadPistaHours:', error.message); return null; }
+    const ph = data?.[0]?.extra_config?.pista_hours;
+    return (ph && Object.keys(ph).length) ? ph : null;
+  }
+  return null;
+}
+
 // ── Blocked hours ─────────────────────────────────────────
 async function loadBlocked() {
   if (USE_SUPABASE) {
@@ -500,7 +513,7 @@ function dateForDow(dow) {
 // LÓGICA PRINCIPAL — HUECOS LIBRES
 // ════════════════════════════════════════════════════════════
 
-async function nextFreeSlots(profId, count = 8, fromDate = null) {
+async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null) {
   // Una sola ronda de consultas en paralelo (antes: una por día/hora → lento)
   const [slots, examDays, avail, blocked] = await Promise.all([
     loadSlots(), loadExamDays(), loadAvailability(), loadBlocked(),
@@ -518,9 +531,12 @@ async function nextFreeSlots(profId, count = 8, fromDate = null) {
     if (dow === 0) continue; // sin domingos
     const date  = ymdLocal(dt);
     if (examDays.includes(date)) continue; // día de examen: sin clases
+    // Horario de pista: si el alumno es de pista, solo estas horas ese día
+    const pistaDia = pistaHours ? (pistaHours[DAY_KEY_MAP[dow]] || []) : null;
 
     for (const hour of hoursForProfDaySync(avail, profId, dow)) {
       if (free.length >= count) break;
+      if (pistaDia && !pistaDia.includes(hour)) continue; // fuera del horario de pista
       if (isBlockedSlotSync(blocked, profId, date, hour)) continue;
       const taken = slots.some(
         s => (s.profId === profId || s.prof_id === profId)
@@ -728,7 +744,7 @@ async function notifyProf(profId, body) {
 // ESTADO DE CONVERSACIÓN
 // ════════════════════════════════════════════════════════════
 
-function makeSuggestState(st, freeSlots, weekMode = false) {
+function makeSuggestState(st, freeSlots, weekMode = false, pistaHours = null) {
   return {
     type:        'suggest',
     studentId:   st.id,
@@ -738,6 +754,7 @@ function makeSuggestState(st, freeSlots, weekMode = false) {
     idx:         0,
     booked:      [],       // clases reservadas en esta conversación
     weekMode,              // true: solo ofrecer huecos de la semana que viene
+    pistaHours,            // filtro de horas de pista (null = sin restricción)
     expires:     thuExpiry(),
   };
 }
@@ -745,6 +762,12 @@ function makeSuggestState(st, freeSlots, weekMode = false) {
 // Fecha de inicio para ofrecer huecos según el modo
 function suggestFromDate(state) {
   return state?.weekMode ? ymdLocal(nextWeekMonday()) : null;
+}
+
+// Filtro de horas de pista para un alumno según su fase
+async function pistaFilterFor(st) {
+  if ((st.fase || 'pista') !== 'pista') return null; // circulación: sin límite
+  return await loadPistaHours();                      // pista: solo horas de pista
 }
 
 // ════════════════════════════════════════════════════════════
@@ -794,7 +817,8 @@ async function sendBookingRequests(force = false) {
     if (yaReservo && !force) { skipped++; continue; }
 
     const profId = st.profId ?? st.prof_id;
-    const free = await nextFreeSlots(profId, 8, nextMon);
+    const pistaHours = await pistaFilterFor(st);
+    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours);
     if (!free.length) {
       await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Contacta con la autoescuela.`);
       continue;
@@ -823,7 +847,7 @@ async function sendBookingRequests(force = false) {
     // Mensaje que inicia el bot → plantilla en Meta, texto libre en Twilio
     const cita = `${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`;
     await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name, cita], msg);
-    pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
+    pending[st.phone] = makeSuggestState({ ...st, profId }, free, true, pistaHours);
     sent++;
   }
   console.log(`✅ Campaña: ${sent} contactados · ${skipped} ya tenían clases (no molestados)`);
@@ -1037,7 +1061,8 @@ app.post('/bot', async (req, res) => {
     }
 
     const nextMon = ymdLocal(nextWeekMonday());
-    const free = await nextFreeSlots(profId, 8, nextMon);
+    const pistaHours = await pistaFilterFor(st);
+    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours);
     if (!free.length) {
       await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
       done();
@@ -1053,7 +1078,7 @@ app.post('/bot', async (req, res) => {
       `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.`;
 
     await sendWA(from, msg);
-    pending[from] = makeSuggestState({ ...st, profId }, free, true);
+    pending[from] = makeSuggestState({ ...st, profId }, free, true, pistaHours);
     done();
     return;
   }
@@ -1129,7 +1154,7 @@ app.post('/bot', async (req, res) => {
     const multiMatch = norm(body).match(/^([1-6])$/) || norm(body).match(/\b([1-6])\s*clases?\b/);
     if (multiMatch) {
       const wanted = parseInt(multiMatch[1]);
-      const all = await nextFreeSlots(state.profId, 30, suggestFromDate(state));
+      const all = await nextFreeSlots(state.profId, 30, suggestFromDate(state), state.pistaHours);
       // Repartir: primera hora de cada día distinto; si pide más que días, segundas horas
       const byDate = {};
       all.forEach(s => { (byDate[s.date] = byDate[s.date] || []).push(s); });
@@ -1153,7 +1178,7 @@ app.post('/bot', async (req, res) => {
         await bookSlot(state.studentId, state.studentName, state.profId, s);
       }
       state.booked = (state.booked || []).concat(picked);
-      state.slots = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
+      state.slots = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
       state.idx = 0;
 
       const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
@@ -1168,7 +1193,7 @@ app.post('/bot', async (req, res) => {
     if (isYes(body)) {
       // Verificar que sigue libre
       if (!(await isSlotFree(state.profId, currentSlot.date, currentSlot.time))) {
-        const fresh = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
+        const fresh = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
         if (!fresh.length) {
           delete pending[from];
           await sendWA(from, `Lo siento, ese hueco acaba de ocuparse y no hay más disponibles. Llama a la autoescuela.`);
@@ -1185,7 +1210,7 @@ app.post('/bot', async (req, res) => {
       await bookSlot(state.studentId, state.studentName, state.profId, currentSlot);
       state.booked = state.booked || [];
       state.booked.push(currentSlot);
-      const remaining = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
+      const remaining = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
       state.slots = remaining; state.idx = 0;
 
       const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
@@ -1197,7 +1222,7 @@ app.post('/bot', async (req, res) => {
     } else if (isNo(body)) {
       state.idx++;
       if (state.idx >= state.slots.length) {
-        const more = await nextFreeSlots(state.profId, 8, suggestFromDate(state));
+        const more = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
         state.slots = more; state.idx = 0;
       }
       if (!state.slots.length) {
@@ -1216,7 +1241,7 @@ app.post('/bot', async (req, res) => {
       // Texto libre — el alumno pregunta por un día/hora concreto
       const { dow, hour } = parseBookingText(body);
       if (dow || hour) {
-        const allFree = await nextFreeSlots(state.profId, 60, suggestFromDate(state));
+        const allFree = await nextFreeSlots(state.profId, 60, suggestFromDate(state), state.pistaHours);
         const hh = hour ? hour.padStart(5, '0') : null;
         const NOMBRE_DIA = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 
@@ -1411,7 +1436,8 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
 
   const profId = st.profId ?? st.prof_id;
   const nextMon = ymdLocal(nextWeekMonday());
-  const free = await nextFreeSlots(profId, 8, nextMon);
+  const pistaHours = await pistaFilterFor(st);
+  const free = await nextFreeSlots(profId, 8, nextMon, pistaHours);
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
   const slot = free[0];
@@ -1425,7 +1451,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
 
   const cita = `${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`;
   await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name, cita], msg);
-  pending[st.phone] = makeSuggestState({ ...st, profId }, free, true);
+  pending[st.phone] = makeSuggestState({ ...st, profId }, free, true, pistaHours);
 
   console.log(`📤 CRM → mensaje manual enviado a ${st.name}`);
   res.json({ ok: true, student: st.name });
