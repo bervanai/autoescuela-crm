@@ -57,6 +57,10 @@ app.use((req, res, next) => {
 const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN;
 const SANDBOX_NUM = process.env.TWILIO_SANDBOX_NUM || 'whatsapp:+14155238886';
+// Modo SMS: si hay TWILIO_SMS_NUM, el bot envía SMS normal (sin Meta, sin
+// "join", funciona hoy). El alumno recibe un texto y responde por SMS.
+const SMS_NUM     = process.env.TWILIO_SMS_NUM || null;  // ej: +34XXXXXXXXX
+const USE_SMS     = !!(SMS_NUM && ACCOUNT_SID && AUTH_TOKEN);
 // Sin credenciales el bot arranca igualmente (API REST disponible), solo
 // que no puede enviar WhatsApp — evita crash-loop en Railway antes de
 // configurar las variables secretas.
@@ -72,10 +76,10 @@ const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'propuesta_clase';
 const TPL_RECORDATORIO = process.env.META_TPL_RECORDATORIO || 'recordatorio_clase';
 const USE_META = !!(META_TOKEN && META_PHONE_ID);
 
-// Proveedor activo: Meta si está configurado, si no Twilio, si no ninguno
-const PROVIDER = USE_META ? 'meta' : (client ? 'twilio' : 'none');
-console.log(`📡 Proveedor WhatsApp: ${PROVIDER}`);
-if (PROVIDER === 'none') console.log('⚠️  Sin proveedor WhatsApp → envío desactivado');
+// Proveedor activo: SMS > Meta > Twilio WhatsApp > ninguno
+const PROVIDER = USE_SMS ? 'sms' : (USE_META ? 'meta' : (client ? 'twilio' : 'none'));
+console.log(`📡 Proveedor de mensajes: ${PROVIDER}`);
+if (PROVIDER === 'none') console.log('⚠️  Sin proveedor → envío desactivado');
 
 // ── Notificaciones ────────────────────────────────────────
 const NOTIFY_ADMIN = process.env.NOTIFY_ADMIN || '+34644299702';
@@ -654,9 +658,22 @@ function parseBookingText(text) {
 
 async function sendWA(to, body) {
   to = normalizePhone(to);
+  if (PROVIDER === 'sms')    return sendSMS(to, body);
   if (PROVIDER === 'meta')   return sendWA_meta(to, body);
   if (PROVIDER === 'twilio') return sendWA_twilio(to, body);
   console.log(`🚫 (sin proveedor) mensaje NO enviado a ${to}: ${body.substring(0, 60).replace(/\n/g, ' ')}`);
+}
+
+// ── Envío por SMS (Twilio) — sin Meta, sin "join", funciona hoy ──
+async function sendSMS(to, body) {
+  try {
+    // SMS no admite *negritas*; las quitamos para que se vea limpio
+    const txt = body.replace(/\*/g, '');
+    await client.messages.create({ from: SMS_NUM, to, body: txt });
+    console.log(`📤 (sms) → ${to}: ${txt.substring(0, 80).replace(/\n/g, ' ')}`);
+  } catch (e) {
+    console.error(`❌ SMS → ${to}:`, e.message);
+  }
 }
 
 // ── Envío por Meta Cloud API ──
