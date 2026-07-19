@@ -429,8 +429,16 @@ function denormalizeSlot(obj) {
 // a Supabase por cada día/hora — el cuello de botella de velocidad)
 function hoursForProfDaySync(avail, profId, dowNum) {
   const dayKey = DAY_KEY_MAP[dowNum];
-  const hours = avail?.[profId]?.[dayKey]?.length ? avail[profId][dayKey] : HOURS_DEFAULT;
-  return [...hours].sort(); // siempre en orden cronológico
+  const profAvail = avail?.[profId];
+  // Si el profesor tiene disponibilidad semanal configurada en el CRM, se
+  // respeta al pie de la letra: un día sin horas = no trabaja ese día
+  // (no se ofrece ningún hueco). Así la campaña del martes propone solo
+  // dentro del horario semanal real de cada profesor.
+  if (profAvail && Object.keys(profAvail).length) {
+    return [...(profAvail[dayKey] || [])].sort();
+  }
+  // Profesor sin ninguna disponibilidad configurada todavía: horario por defecto.
+  return [...HOURS_DEFAULT].sort();
 }
 
 function isBlockedSlotSync(blocked, profId, date, hour) {
