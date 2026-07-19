@@ -938,16 +938,73 @@ function Alumnos({students,setStudents,professors,user}){
 
 // ─── PROFESORES ───────────────────────────────────────────────────────────────
 const PROF_COLORS=['#1e3a5f','#7c2d8c','#0e6856','#b45309','#9f1239','#1d4ed8','#065f46','#7c3aed'];
-function ProfModal({prof,onSave,onClose}){
-  const blank={name:'',color:PROF_COLORS[0],phone:'',email:''};
-  const [f,setF]=useState(prof?{name:prof.name,color:prof.color,phone:prof.phone||'',email:prof.email||''}:blank);
+// Permisos que puede impartir un profesor
+const LICENSE_OPTIONS=['AM','A1','A2','A','B','BE','C','CE','D'];
+// Regla del negocio: si solo imparte carnet B → solo circulación; cualquier
+// otro permiso (moto, camión, etc.) → pista y circulación.
+function deriveClassMode(licenses){
+  const ls=(licenses||[]).filter(Boolean);
+  if(ls.length&&ls.every(l=>l==='B'))return 'circulacion';
+  return 'ambos';
+}
+const CLASS_MODE_LABEL={circulacion:'Solo circulación',pista:'Solo pista',ambos:'Pista y circulación'};
+const CLASS_MODE_COLOR={circulacion:'#0e6856',pista:'#b45309',ambos:'#1d4ed8'};
+function ProfModal({prof,vehicles=[],onSave,onClose}){
+  const blank={name:'',color:PROF_COLORS[0],phone:'',email:'',licenses:[],classMode:'',vehicleId:'',schedule:''};
+  const [f,setF]=useState(prof?{name:prof.name,color:prof.color,phone:prof.phone||'',email:prof.email||'',
+    licenses:prof.licenses||[],classMode:prof.classMode||prof.class_mode||'',
+    vehicleId:prof.vehicleId||prof.vehicle_id||'',schedule:prof.schedule||''}:blank);
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
+  // Tipo de clase efectivo: manual si se ha fijado, si no derivado de los permisos
+  const effMode=f.classMode||deriveClassMode(f.licenses);
+  const toggleLic=(l)=>setF(x=>{
+    const has=(x.licenses||[]).includes(l);
+    const licenses=has?x.licenses.filter(y=>y!==l):[...(x.licenses||[]),l];
+    // Si el modo no se ha tocado manualmente, mantenerlo sincronizado con la regla
+    return {...x,licenses,classMode:x.classMode&&x.classMode!==deriveClassMode(x.licenses)?x.classMode:''};
+  });
   return(
-    <Modal title={prof?'Editar profesor':'Nuevo profesor'} onClose={onClose} width={420}>
+    <Modal title={prof?'Editar profesor':'Nuevo profesor'} onClose={onClose} width={460}>
       <F label="Nombre completo"><input className={inp} value={f.name} onChange={e=>s('name',e.target.value)} placeholder="Ej: Juan García"/></F>
       <div className="form-2col" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <F label="Teléfono"><input className={inp} value={f.phone} onChange={e=>s('phone',e.target.value)} placeholder="+34 600 000 000"/></F>
         <F label="Email"><input className={inp} value={f.email} onChange={e=>s('email',e.target.value)} placeholder="prof@autoescuela.com"/></F>
+      </div>
+      <F label="Permisos que imparte">
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {LICENSE_OPTIONS.map(l=>{
+            const on=(f.licenses||[]).includes(l);
+            return(
+              <button key={l} type="button" onClick={()=>toggleLic(l)}
+                style={{padding:'5px 11px',borderRadius:7,border:'2px solid',cursor:'pointer',fontWeight:700,fontSize:12,
+                  borderColor:on?'#1e3a5f':'#e2e8f0',background:on?'#1e3a5f':'#fff',color:on?'#fff':'#64748b'}}>
+                {l}
+              </button>
+            );
+          })}
+        </div>
+      </F>
+      <F label="Tipo de clase">
+        <select className={inp} value={effMode} onChange={e=>s('classMode',e.target.value)}>
+          <option value="circulacion">Solo circulación</option>
+          <option value="pista">Solo pista</option>
+          <option value="ambos">Pista y circulación</option>
+        </select>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:4,display:'flex',alignItems:'center',gap:4}}>
+          <Icon name="info" size={12}/>
+          {f.classMode&&f.classMode!==deriveClassMode(f.licenses)
+            ?'Fijado manualmente (distinto de la regla automática).'
+            :`Automático según permisos: ${CLASS_MODE_LABEL[deriveClassMode(f.licenses)]} (solo B → circulación; resto → pista y circulación).`}
+        </div>
+      </F>
+      <div className="form-2col" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+        <F label="Coche asignado">
+          <select className={inp} value={f.vehicleId} onChange={e=>s('vehicleId',e.target.value)}>
+            <option value="">— Sin asignar —</option>
+            {vehicles.map(v=><option key={v.id} value={v.id}>{v.name}{v.plate?` · ${v.plate}`:''}</option>)}
+          </select>
+        </F>
+        <F label="Horario aprox."><input className={inp} value={f.schedule} onChange={e=>s('schedule',e.target.value)} placeholder="09:00 a 14:00 y 16:00 a 20:00"/></F>
       </div>
       <F label="Color identificativo">
         <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
@@ -971,13 +1028,13 @@ function ProfModal({prof,onSave,onClose}){
       </div>
       <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
         <button onClick={onClose} className={btnG}>Cancelar</button>
-        <button onClick={()=>{if(f.name)onSave(f)}} className={btnO}><Icon name="save" size={17}/>Guardar</button>
+        <button onClick={()=>{if(f.name)onSave({...f,classMode:effMode})}} className={btnO}><Icon name="save" size={17}/>Guardar</button>
       </div>
     </Modal>
   );
 }
 
-function Profesores({professors,setProfessors,students,user}){
+function Profesores({professors,setProfessors,students,vehicles=[],user}){
   const isAdmin=user.role==='admin';
   const [editing,setEditing]=useState(null);
   const [adding,setAdding]=useState(false);
@@ -1044,6 +1101,23 @@ function Profesores({professors,setProfessors,students,user}){
                 {autoCount>0&&<span style={{fontSize:10,fontWeight:700,background:'#7c2d8c',color:'#fff',padding:'2px 6px',borderRadius:3}}>{autoCount} Auto</span>}
                 {motoCount>0&&<Badge label={`${motoCount} Moto`} color="#0e6856"/>}
               </div>
+              {/* Permisos + tipo de clase */}
+              {(()=>{const mode=prof.classMode||prof.class_mode||deriveClassMode(prof.licenses);return(
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8,alignItems:'center'}}>
+                  {(prof.licenses||[]).map(l=>(
+                    <span key={l} style={{fontSize:10,fontWeight:700,background:'#eef2f7',color:'#334155',padding:'2px 6px',borderRadius:3}}>{l}</span>
+                  ))}
+                  <Badge label={CLASS_MODE_LABEL[mode]||'Pista y circulación'} color={CLASS_MODE_COLOR[mode]||'#1d4ed8'}/>
+                </div>
+              );})()}
+              {(prof.vehicleId||prof.vehicle_id)&&(()=>{const veh=vehicles.find(v=>v.id===(prof.vehicleId||prof.vehicle_id));return veh?(
+                <div style={{fontSize:12,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:4}}>
+                  <Icon name="directions_car" size={13}/>{veh.name}{veh.plate?` · ${veh.plate}`:''}
+                </div>
+              ):null;})()}
+              {prof.schedule&&<div style={{fontSize:12,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:4}}>
+                <Icon name="schedule" size={13}/>{prof.schedule}
+              </div>}
               <div style={{borderTop:'1px solid #f1f5f9',paddingTop:10,display:'flex',gap:6,flexWrap:'wrap'}}>
                 {/* Distribución vehículos */}
                 {[
@@ -1076,7 +1150,7 @@ function Profesores({professors,setProfessors,students,user}){
         </button>
       </div>
 
-      {(adding||editing)&&<ProfModal prof={editing} onSave={handleSave} onClose={()=>{setAdding(false);setEditing(null)}}/>}
+      {(adding||editing)&&<ProfModal prof={editing} vehicles={vehicles} onSave={handleSave} onClose={()=>{setAdding(false);setEditing(null)}}/>}
       {deleting&&(
         <Modal title="Eliminar profesor" onClose={()=>setDeleting(null)} width={380}>
           <p style={{color:'#475569',marginBottom:20}}>¿Eliminar a <strong>{deleting.name}</strong>?</p>
@@ -2729,6 +2803,10 @@ function App(){
     const normProf=p=>({
       id:p.id,name:p.name,color:p.color||'#1e3a5f',
       phone:p.phone||null,email:p.email||null,active:p.active!==false,
+      licenses:p.licenses||[],
+      class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),
+      vehicle_id:p.vehicleId||p.vehicle_id||null,
+      schedule:p.schedule||null,
     });
     const normStu=s=>({
       id:s.id,name:s.name,phone:s.phone||null,
@@ -2792,7 +2870,7 @@ function App(){
       syncedSlots.current=snap;
     }
     // Resto de tablas (sin clases) por reemplazo
-    const normProf=p=>({id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false});
+    const normProf=p=>({id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false,licenses:p.licenses||[],class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),vehicle_id:p.vehicleId||p.vehicle_id||null,schedule:p.schedule||null});
     const normStu=s=>({id:s.id,name:s.name,phone:s.phone||null,prof_id:s.profId||s.prof_id||null,license:s.license||'B',vehicle_type:s.vehicleType||s.vehicle_type||'manual',num_clases:s.numClases??s.num_clases??0,bono:s.bono||null,tasas_pagadas:!!s.tasasPagadas,active:s.active!==false,bot_active:s.botActive!==false,exam_date:s.examDate||s.exam_date||null,exam_result:s.examResult||s.exam_result||null,fase:s.fase||'pista',notes:s.notes||null});
     const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
     const {error}=await sb.rpc('crm_save_data',{
@@ -2830,6 +2908,9 @@ function App(){
       id:p.id,name:p.name,color:p.color||'#1e3a5f',
       phone:p.phone||'',email:p.email||'',
       avatar:(p.name||'?').slice(0,2).toUpperCase(),active:p.active!==false,
+      licenses:p.licenses||[],
+      classMode:p.class_mode||deriveClassMode(p.licenses),
+      vehicleId:p.vehicle_id||'',schedule:p.schedule||'',
     })));
     setStudents((d.students||[]).map(s=>({
       id:s.id,name:s.name,phone:s.phone||'',profId:s.prof_id,
@@ -3025,7 +3106,7 @@ function App(){
     alumnos:        <Alumnos {...shared} setStudents={setStudents}/>,
     horario:        <Horario {...shared} slots={slots} setSlots={setSlots} vehicles={vehicles} examDays={examDays} setExamDays={setExamDays}/>,
     disponibilidad: <Disponibilidad {...shared} slots={slots} setSlots={setSlots}/>,
-    profesores:     <Profesores {...shared} setProfessors={setProfessors}/>,
+    profesores:     <Profesores {...shared} vehicles={vehicles} setProfessors={setProfessors}/>,
     vehiculos:      <Vehiculos user={user} vehicles={vehicles} setVehicles={setVehicles}/>,
     mensajes:       <Mensajes {...shared} slots={slots}/>,
     estadisticas:   <Estadisticas {...shared} slots={slots}/>,

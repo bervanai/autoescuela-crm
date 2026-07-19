@@ -1937,8 +1937,25 @@ function Alumnos({
   }), "Eliminar"))));
 }
 const PROF_COLORS = ['#1e3a5f', '#7c2d8c', '#0e6856', '#b45309', '#9f1239', '#1d4ed8', '#065f46', '#7c3aed'];
+const LICENSE_OPTIONS = ['AM', 'A1', 'A2', 'A', 'B', 'BE', 'C', 'CE', 'D'];
+function deriveClassMode(licenses) {
+  const ls = (licenses || []).filter(Boolean);
+  if (ls.length && ls.every(l => l === 'B')) return 'circulacion';
+  return 'ambos';
+}
+const CLASS_MODE_LABEL = {
+  circulacion: 'Solo circulación',
+  pista: 'Solo pista',
+  ambos: 'Pista y circulación'
+};
+const CLASS_MODE_COLOR = {
+  circulacion: '#0e6856',
+  pista: '#b45309',
+  ambos: '#1d4ed8'
+};
 function ProfModal({
   prof,
+  vehicles = [],
   onSave,
   onClose
 }) {
@@ -1946,22 +1963,40 @@ function ProfModal({
     name: '',
     color: PROF_COLORS[0],
     phone: '',
-    email: ''
+    email: '',
+    licenses: [],
+    classMode: '',
+    vehicleId: '',
+    schedule: ''
   };
   const [f, setF] = useState(prof ? {
     name: prof.name,
     color: prof.color,
     phone: prof.phone || '',
-    email: prof.email || ''
+    email: prof.email || '',
+    licenses: prof.licenses || [],
+    classMode: prof.classMode || prof.class_mode || '',
+    vehicleId: prof.vehicleId || prof.vehicle_id || '',
+    schedule: prof.schedule || ''
   } : blank);
   const s = (k, v) => setF(x => ({
     ...x,
     [k]: v
   }));
+  const effMode = f.classMode || deriveClassMode(f.licenses);
+  const toggleLic = l => setF(x => {
+    const has = (x.licenses || []).includes(l);
+    const licenses = has ? x.licenses.filter(y => y !== l) : [...(x.licenses || []), l];
+    return {
+      ...x,
+      licenses,
+      classMode: x.classMode && x.classMode !== deriveClassMode(x.licenses) ? x.classMode : ''
+    };
+  });
   return React.createElement(Modal, {
     title: prof ? 'Editar profesor' : 'Nuevo profesor',
     onClose: onClose,
-    width: 420
+    width: 460
   }, React.createElement(F, {
     label: "Nombre completo"
   }, React.createElement("input", {
@@ -1990,6 +2025,81 @@ function ProfModal({
     value: f.email,
     onChange: e => s('email', e.target.value),
     placeholder: "prof@autoescuela.com"
+  }))), React.createElement(F, {
+    label: "Permisos que imparte"
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap'
+    }
+  }, LICENSE_OPTIONS.map(l => {
+    const on = (f.licenses || []).includes(l);
+    return React.createElement("button", {
+      key: l,
+      type: "button",
+      onClick: () => toggleLic(l),
+      style: {
+        padding: '5px 11px',
+        borderRadius: 7,
+        border: '2px solid',
+        cursor: 'pointer',
+        fontWeight: 700,
+        fontSize: 12,
+        borderColor: on ? '#1e3a5f' : '#e2e8f0',
+        background: on ? '#1e3a5f' : '#fff',
+        color: on ? '#fff' : '#64748b'
+      }
+    }, l);
+  }))), React.createElement(F, {
+    label: "Tipo de clase"
+  }, React.createElement("select", {
+    className: inp,
+    value: effMode,
+    onChange: e => s('classMode', e.target.value)
+  }, React.createElement("option", {
+    value: "circulacion"
+  }, "Solo circulación"), React.createElement("option", {
+    value: "pista"
+  }, "Solo pista"), React.createElement("option", {
+    value: "ambos"
+  }, "Pista y circulación")), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 4,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 4
+    }
+  }, React.createElement(Icon, {
+    name: "info",
+    size: 12
+  }), f.classMode && f.classMode !== deriveClassMode(f.licenses) ? 'Fijado manualmente (distinto de la regla automática).' : `Automático según permisos: ${CLASS_MODE_LABEL[deriveClassMode(f.licenses)]} (solo B → circulación; resto → pista y circulación).`)), React.createElement("div", {
+    className: "form-2col",
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 12
+    }
+  }, React.createElement(F, {
+    label: "Coche asignado"
+  }, React.createElement("select", {
+    className: inp,
+    value: f.vehicleId,
+    onChange: e => s('vehicleId', e.target.value)
+  }, React.createElement("option", {
+    value: ""
+  }, "— Sin asignar —"), vehicles.map(v => React.createElement("option", {
+    key: v.id,
+    value: v.id
+  }, v.name, v.plate ? ` · ${v.plate}` : '')))), React.createElement(F, {
+    label: "Horario aprox."
+  }, React.createElement("input", {
+    className: inp,
+    value: f.schedule,
+    onChange: e => s('schedule', e.target.value),
+    placeholder: "09:00 a 14:00 y 16:00 a 20:00"
   }))), React.createElement(F, {
     label: "Color identificativo"
   }, React.createElement("div", {
@@ -2060,7 +2170,10 @@ function ProfModal({
     className: btnG
   }, "Cancelar"), React.createElement("button", {
     onClick: () => {
-      if (f.name) onSave(f);
+      if (f.name) onSave({
+        ...f,
+        classMode: effMode
+      });
     },
     className: btnO
   }, React.createElement(Icon, {
@@ -2072,6 +2185,7 @@ function Profesores({
   professors,
   setProfessors,
   students,
+  vehicles = [],
   user
 }) {
   const isAdmin = user.role === 'admin';
@@ -2235,7 +2349,58 @@ function Profesores({
     }, autoCount, " Auto"), motoCount > 0 && React.createElement(Badge, {
       label: `${motoCount} Moto`,
       color: "#0e6856"
-    })), React.createElement("div", {
+    })), (() => {
+      const mode = prof.classMode || prof.class_mode || deriveClassMode(prof.licenses);
+      return React.createElement("div", {
+        style: {
+          display: 'flex',
+          gap: 6,
+          flexWrap: 'wrap',
+          marginBottom: 8,
+          alignItems: 'center'
+        }
+      }, (prof.licenses || []).map(l => React.createElement("span", {
+        key: l,
+        style: {
+          fontSize: 10,
+          fontWeight: 700,
+          background: '#eef2f7',
+          color: '#334155',
+          padding: '2px 6px',
+          borderRadius: 3
+        }
+      }, l)), React.createElement(Badge, {
+        label: CLASS_MODE_LABEL[mode] || 'Pista y circulación',
+        color: CLASS_MODE_COLOR[mode] || '#1d4ed8'
+      }));
+    })(), (prof.vehicleId || prof.vehicle_id) && (() => {
+      const veh = vehicles.find(v => v.id === (prof.vehicleId || prof.vehicle_id));
+      return veh ? React.createElement("div", {
+        style: {
+          fontSize: 12,
+          color: '#64748b',
+          marginBottom: 6,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4
+        }
+      }, React.createElement(Icon, {
+        name: "directions_car",
+        size: 13
+      }), veh.name, veh.plate ? ` · ${veh.plate}` : '') : null;
+    })(), prof.schedule && React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: '#64748b',
+        marginBottom: 6,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4
+      }
+    }, React.createElement(Icon, {
+      name: "schedule",
+      size: 13
+    }), prof.schedule), React.createElement("div", {
       style: {
         borderTop: '1px solid #f1f5f9',
         paddingTop: 10,
@@ -2320,6 +2485,7 @@ function Profesores({
     }
   }, "Añadir profesor"))), (adding || editing) && React.createElement(ProfModal, {
     prof: editing,
+    vehicles: vehicles,
     onSave: handleSave,
     onClose: () => {
       setAdding(false);
@@ -5732,7 +5898,11 @@ function App() {
       color: p.color || '#1e3a5f',
       phone: p.phone || null,
       email: p.email || null,
-      active: p.active !== false
+      active: p.active !== false,
+      licenses: p.licenses || [],
+      class_mode: p.classMode || p.class_mode || deriveClassMode(p.licenses),
+      vehicle_id: p.vehicleId || p.vehicle_id || null,
+      schedule: p.schedule || null
     });
     const normStu = s => ({
       id: s.id,
@@ -5816,7 +5986,11 @@ function App() {
       color: p.color || '#1e3a5f',
       phone: p.phone || null,
       email: p.email || null,
-      active: p.active !== false
+      active: p.active !== false,
+      licenses: p.licenses || [],
+      class_mode: p.classMode || p.class_mode || deriveClassMode(p.licenses),
+      vehicle_id: p.vehicleId || p.vehicle_id || null,
+      schedule: p.schedule || null
     });
     const normStu = s => ({
       id: s.id,
@@ -5881,7 +6055,11 @@ function App() {
       phone: p.phone || '',
       email: p.email || '',
       avatar: (p.name || '?').slice(0, 2).toUpperCase(),
-      active: p.active !== false
+      active: p.active !== false,
+      licenses: p.licenses || [],
+      classMode: p.class_mode || deriveClassMode(p.licenses),
+      vehicleId: p.vehicle_id || '',
+      schedule: p.schedule || ''
     })));
     setStudents((d.students || []).map(s => ({
       id: s.id,
@@ -6113,6 +6291,7 @@ function App() {
     }),
     profesores: React.createElement(Profesores, {
       ...shared,
+      vehicles: vehicles,
       setProfessors: setProfessors
     }),
     vehiculos: React.createElement(Vehiculos, {

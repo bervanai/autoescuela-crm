@@ -61,6 +61,11 @@ CREATE TABLE professors (
     email       TEXT,
     color       TEXT        NOT NULL DEFAULT '#1e3a5f', -- color en la agenda
     active      BOOLEAN     NOT NULL DEFAULT TRUE,
+    licenses    TEXT[]      NOT NULL DEFAULT '{}',      -- permisos que imparte, p.ej. {B} o {B,A1,A2,AM}
+    class_mode  TEXT        NOT NULL DEFAULT 'ambos',   -- circulacion | pista | ambos
+                                                        -- regla: solo B -> circulacion; resto -> ambos
+    vehicle_id  TEXT,                                   -- coche asignado (id de vehicles); editable, sin FK dura
+    schedule    TEXT,                                   -- horario aproximado en texto, p.ej. "09:00 a 14:15 y 15:15 a 20:30"
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
