@@ -1017,17 +1017,18 @@ app.post('/bot', async (req, res) => {
   // Meta espera 200 rápido; respondemos ya y procesamos después
   if (isMeta) res.sendStatus(200);
 
+  // Helper para cerrar la petición según el proveedor (Meta ya respondió arriba).
+  // Se declara antes de cualquier uso para evitar el TDZ de `const`.
+  const done = () => { if (!isMeta) res.send('<Response></Response>'); };
+
   const parsed = parseIncoming(req.body);
   if (!parsed || !parsed.body) {           // status update u otro evento: ignorar
-    if (!isMeta) done();
+    done();
     return;
   }
   const from = parsed.from;
   const body = parsed.body;
   console.log(`\n📥 (${parsed.provider}) ${from}: "${body}"`);
-
-  // Helper para cerrar la petición según el proveedor (Meta ya respondió arriba)
-  const done = () => { if (!isMeta) res.send('<Response></Response>'); };
 
   let state = pending[from];
 
