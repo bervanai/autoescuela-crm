@@ -429,8 +429,16 @@ function denormalizeSlot(obj) {
 // a Supabase por cada día/hora — el cuello de botella de velocidad)
 function hoursForProfDaySync(avail, profId, dowNum) {
   const dayKey = DAY_KEY_MAP[dowNum];
-  const hours = avail?.[profId]?.[dayKey]?.length ? avail[profId][dayKey] : HOURS_DEFAULT;
-  return [...hours].sort(); // siempre en orden cronológico
+  const profAvail = avail?.[profId];
+  // Si el profesor tiene disponibilidad semanal configurada en el CRM, se
+  // respeta al pie de la letra: un día sin horas = no trabaja ese día
+  // (no se ofrece ningún hueco). Así la campaña del martes propone solo
+  // dentro del horario semanal real de cada profesor.
+  if (profAvail && Object.keys(profAvail).length) {
+    return [...(profAvail[dayKey] || [])].sort();
+  }
+  // Profesor sin ninguna disponibilidad configurada todavía: horario por defecto.
+  return [...HOURS_DEFAULT].sort();
 }
 
 function isBlockedSlotSync(blocked, profId, date, hour) {
@@ -1009,17 +1017,18 @@ app.post('/bot', async (req, res) => {
   // Meta espera 200 rápido; respondemos ya y procesamos después
   if (isMeta) res.sendStatus(200);
 
+  // Helper para cerrar la petición según el proveedor (Meta ya respondió arriba).
+  // Se declara antes de cualquier uso para evitar el TDZ de `const`.
+  const done = () => { if (!isMeta) res.send('<Response></Response>'); };
+
   const parsed = parseIncoming(req.body);
   if (!parsed || !parsed.body) {           // status update u otro evento: ignorar
-    if (!isMeta) done();
+    done();
     return;
   }
   const from = parsed.from;
   const body = parsed.body;
   console.log(`\n📥 (${parsed.provider}) ${from}: "${body}"`);
-
-  // Helper para cerrar la petición según el proveedor (Meta ya respondió arriba)
-  const done = () => { if (!isMeta) res.send('<Response></Response>'); };
 
   let state = pending[from];
 
