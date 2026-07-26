@@ -10,6 +10,7 @@ const twilio  = require('twilio');
 const cron    = require('node-cron');
 const fs      = require('fs');
 const path    = require('path');
+const crypto  = require('crypto');
 
 // ── Supabase (opcional) ───────────────────────────────────
 const USE_SUPABASE = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
@@ -42,7 +43,9 @@ async function refreshSchoolName() {
 // ── Express ───────────────────────────────────────────────
 const app = express();
 app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+// Guardamos el cuerpo sin procesar: la firma de Meta se calcula sobre los
+// bytes exactos que llegaron, así que hay que conservarlos antes del parseo.
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 // ── CORS ──────────────────────────────────────────────────
 app.use((req, res, next) => {
@@ -70,6 +73,10 @@ const client = (ACCOUNT_SID && AUTH_TOKEN) ? twilio(ACCOUNT_SID, AUTH_TOKEN) : n
 const META_TOKEN        = process.env.META_TOKEN;                 // token de acceso
 const META_PHONE_ID     = process.env.META_PHONE_NUMBER_ID;       // ID del número
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'autoescuela_exit_verify';
+// Secreto de la app (Meta → Configuración → Básica → Clave secreta). Si está
+// puesto, se valida la firma de cada webhook; si no, no se puede validar y se
+// aceptan igual (evita romper una instalación que aún no lo tenga configurado).
+const META_APP_SECRET   = process.env.META_APP_SECRET || null;
 const META_API_VER      = process.env.META_API_VERSION || 'v21.0';
 // Nombres de las plantillas aprobadas en Meta (para mensajes que INICIA el bot)
 const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'propuesta_clase';
@@ -977,6 +984,21 @@ function twilioSignatureOk(req) {
   }
 }
 
+// Validación de firma de Meta: cada webhook llega firmado con el secreto de la
+// app en la cabecera X-Hub-Signature-256. Solo se exige cuando META_APP_SECRET
+// está configurado; sin él no hay con qué comparar.
+function metaSignatureOk(req) {
+  if (!META_APP_SECRET) return true;          // no configurado: no se valida
+  const sig = req.headers['x-hub-signature-256'];
+  if (!sig || !req.rawBody) return false;
+  const expected = 'sha256=' + crypto.createHmac('sha256', META_APP_SECRET)
+    .update(req.rawBody).digest('hex');
+  const a = Buffer.from(String(sig));
+  const b = Buffer.from(expected);
+  // timingSafeEqual exige la misma longitud; distinta longitud ya es un fallo
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // ── Verificación del webhook de Meta (GET) ──
 // Meta llama una vez con hub.challenge para confirmar la URL.
 app.get('/bot', (req, res) => {
@@ -1009,8 +1031,14 @@ function parseIncoming(reqBody) {
 
 app.post('/bot', async (req, res) => {
   const isMeta = !!req.body?.entry;
-  // La firma de Twilio solo se valida para peticiones de Twilio
-  if (!isMeta && !twilioSignatureOk(req)) {
+  // Cada proveedor firma a su manera: Twilio con el Auth Token, Meta con el
+  // secreto de la app. Se valida la que corresponda al origen de la petición.
+  if (isMeta) {
+    if (!metaSignatureOk(req)) {
+      console.warn('🚫 Webhook de Meta con firma inválida — rechazado');
+      return res.status(403).send('Forbidden');
+    }
+  } else if (!twilioSignatureOk(req)) {
     console.warn('🚫 Petición al webhook con firma inválida — rechazada');
     return res.status(403).send('Forbidden');
   }
@@ -1442,6 +1470,52 @@ app.get('/status', async (req, res) => {
 // ════════════════════════════════════════════════════════════
 // REST API — sincronización con el CRM
 // ════════════════════════════════════════════════════════════
+
+// GET /health — diagnóstico de la conexión con WhatsApp.
+// Pregunta a Meta por el número configurado usando el token actual: si
+// responde, el token es válido; si no, devuelve el motivo. Es la forma rápida
+// de detectar la causa más habitual de que el bot deje de enviar mensajes
+// (token caducado o sin acceso a la cuenta de WhatsApp).
+app.get('/health', async (req, res) => {
+  const out = {
+    proveedor: PROVIDER,
+    modo:      USE_SUPABASE ? 'supabase' : 'json_local',
+  };
+  if (PROVIDER !== 'meta') {
+    out.ok = PROVIDER !== 'none';
+    out.aviso = 'El proveedor activo no es Meta: no hay token de Meta que comprobar.';
+    return res.json(out);
+  }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}` +
+      `?fields=display_phone_number,verified_name,quality_rating`,
+      { headers: { Authorization: `Bearer ${META_TOKEN}` }, signal: ctl.signal }
+    );
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      out.ok             = true;
+      out.token_valido   = true;
+      out.numero         = body.display_phone_number || null;
+      out.nombre_visible = body.verified_name || null;
+      out.calidad        = body.quality_rating || null;
+    } else {
+      out.ok           = false;
+      out.token_valido = false;
+      out.error        = body?.error?.message || `HTTP ${r.status}`;
+      out.solucion     = 'Genera un token permanente en Meta (con acceso a todas las cuentas) y actualiza META_TOKEN en Railway.';
+    }
+  } catch (e) {
+    out.ok           = false;
+    out.token_valido = false;
+    out.error = e.name === 'AbortError' ? 'Meta no respondió (timeout)' : e.message;
+  } finally {
+    clearTimeout(timer);
+  }
+  res.json(out);
+});
 
 // GET /api/ping
 app.get('/api/ping', (req, res) => {
