@@ -630,7 +630,28 @@ function isNo(t) {
 }
 function isDone(t) {
   const n = norm(t);
-  return ['listo','gracias','ya','fin','nada mas','nada más','suficiente'].some(w => n.includes(w));
+  return ['listo','gracias','ya esta','ya está','fin','nada mas','nada más','suficiente',
+          'adios','adiós','hasta luego','hasta pronto','chao','chau','eso es todo','asi esta bien','así está bien']
+    .some(w => n.includes(w)) || n === 'ya';
+}
+
+// Reconocimiento suave: "ok", "vale", "perfecto"… No es una orden de reservar.
+// Dentro de una conversación, si ya hay clases hechas, cierra; si no, no molesta.
+function isSoftAck(t) {
+  const n = norm(t);
+  if (!n) return false;
+  if (['ok','oka','okey','okay','vale','va','dale','bien','guay'].includes(n)) return true;
+  return ['perfect','genial','estupend','fenomenal','de acuerdo','correcto','entendido','de nada','muy bien']
+    .some(w => n.includes(w));
+}
+
+// ¿El alumno quiere reservar/gestionar clases? Solo entonces arranca la propuesta.
+// Evita que un "gracias/ok/perfecto" reactive el menú de horas.
+function wantsBooking(body) {
+  const p = parseBookingText(body);
+  if (p.dow || p.hour) return true;
+  const n = norm(body);
+  return /(hola|buenas|hey|holi|saludos|reserv|cita|apunt|conducir|practic|clase|coche|empez|empiez|organiz|quiero|queria|querria|necesito|me gustaria|puedo|podria|disponib|hueco|horario|semana|dame|ponme)/.test(n);
 }
 
 // ── Parser de texto libre ─────────────────────────────────
@@ -1135,6 +1156,17 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
+    // Solo arrancamos la propuesta si el alumno REALMENTE quiere reservar.
+    // Un "gracias/ok/perfecto" o un mensaje suelto no debe reproponer clases.
+    if (!wantsBooking(body)) {
+      await sendWA(from,
+        `¡Un placer, ${st.name}! 🙌\n` +
+        `Cuando quieras reservar o cambiar clases, escríbeme *hola* y lo vemos. 🚗`
+      );
+      done();
+      return;
+    }
+
     const nextMon = ymdLocal(nextWeekMonday());
     const pistaHours = await pistaFilterFor(st);
     const free = await nextFreeSlots(profId, 80, nextMon, pistaHours);
@@ -1207,12 +1239,14 @@ app.post('/bot', async (req, res) => {
 
   // ── FLUJO: Sugerencia ─────────────────────────────────
   if (state.type === 'suggest') {
-    if (isDone(body)) {
+    const yaHechas = state.booked || [];
+    // Cierre explícito ("listo/gracias/adiós"), o reconocimiento suave
+    // ("ok/perfecto") cuando ya hay clases hechas → terminar sin re-preguntar.
+    if (isDone(body) || (isSoftAck(body) && yaHechas.length)) {
       delete pending[from];
-      const booked = state.booked || [];
-      const resumen = booked.length
+      const resumen = yaHechas.length
         ? `\n\n📋 *Tus clases reservadas:*\n` +
-          booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n') +
+          yaHechas.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n') +
           `\n\nTe recordaremos cada una 48h antes.`
         : '';
       await sendWA(from, `¡Perfecto ${state.studentName}!${resumen} 🚗`);
