@@ -997,7 +997,13 @@ async function bookSlot(studentId, studentName, profId, slot) {
     createdBy:    'bot',
     reminderSent: false,
   };
-  await insertSlot(newSlot);
+  // Si el guardado falla (p.ej. el hueco se ocupó entre la comprobación y el
+  // INSERT → viola el índice único prof+fecha+hora), NO confirmamos nada.
+  const saved = await insertSlot(newSlot);
+  if (!saved) {
+    console.error(`❌ Reserva NO guardada (hueco ocupado o error): ${studentName} → ${slot.date} ${slot.time}`);
+    return null;
+  }
   await incrementClases(studentId);
   await notifyProf(profId,
     `📌 *Nueva clase reservada*\n👤 ${studentName}\n📅 ${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`
@@ -1307,7 +1313,24 @@ app.post('/bot', async (req, res) => {
           done();
           return;
         }
-        await bookSlot(state.studentId, state.studentName, state.profId, match);
+        const saved = await bookSlot(state.studentId, state.studentName, state.profId, match);
+        if (!saved) {
+          // El hueco se ocupó entre la comprobación y el guardado (o error de
+          // BD): NO confirmamos. Refrescamos huecos reales y re-ofrecemos.
+          const freshFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours);
+          const freshDays = daysWithSlots(freshFree, (state.booked || []).map(b => b.date));
+          if (!freshDays.length) {
+            delete pending[from];
+            await sendWA(from, `Vaya, ese hueco acaba de ocuparse y no quedan más esta semana 😔\nLlama a la autoescuela y te ayudamos. 📞`);
+            done();
+            return;
+          }
+          const d = freshDays.find(x => x.date === match.date) || freshDays[0];
+          state.currentDate = d.date;
+          await sendWA(from, `Vaya, las ${hh}h acaban de ocuparse justo ahora 😅\n\n` + dayMenuMessage(d, ''));
+          done();
+          return;
+        }
         state.booked = state.booked || [];
         state.booked.push(match);
 
