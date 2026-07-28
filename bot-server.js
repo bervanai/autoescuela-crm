@@ -785,6 +785,7 @@ function makeSuggestState(st, freeSlots, weekMode = false, pistaHours = null) {
     slots:       freeSlots,
     idx:         0,
     booked:      [],       // clases reservadas en esta conversación
+    currentDate: null,     // día cuyas horas se le están mostrando al alumno
     weekMode,              // true: solo ofrecer huecos de la semana que viene
     pistaHours,            // filtro de horas de pista (null = sin restricción)
     expires:     thuExpiry(),
@@ -796,20 +797,30 @@ function suggestFromDate(state) {
   return state?.weekMode ? ymdLocal(nextWeekMonday()) : null;
 }
 
-// Reparte los huecos libres en DÍAS distintos: devuelve el primer hueco de
-// cada día (uno por día), saltando los días ya reservados en excludeDates.
-// Sirve para que, al reservar una clase, la siguiente propuesta caiga en otro
-// día en vez de ofrecer otra hora del mismo día.
-function slotsSpreadByDay(freeSlots, excludeDates = []) {
-  const seen = new Set(excludeDates.map(d => String(d).substring(0, 10)));
-  const out = [];
+// Agrupa los huecos libres por DÍA (respetando el orden de fecha/hora) y
+// devuelve [{date, dayName, slots:[...]}], saltando los días de excludeDates.
+// Es la base del flujo "elige tu hora": al alumno se le muestran las horas
+// libres de un día y él responde con la que quiere.
+function daysWithSlots(freeSlots, excludeDates = []) {
+  const skip = new Set(excludeDates.map(d => String(d).substring(0, 10)));
+  const byDate = new Map();
   for (const s of freeSlots) { // freeSlots viene ordenado por fecha+hora
     const d = String(s.date).substring(0, 10);
-    if (seen.has(d)) continue;
-    seen.add(d);
-    out.push(s);
+    if (skip.has(d)) continue;
+    if (!byDate.has(d)) byDate.set(d, { date: d, dayName: s.dayName, slots: [] });
+    byDate.get(d).slots.push(s);
   }
-  return out;
+  return [...byDate.values()];
+}
+
+// Mensaje que enseña las horas libres de un día para que el alumno elija.
+function dayMenuMessage(day, prefix = '') {
+  const horas = day.slots.map(s => s.time).join(' · ');
+  const ej = day.slots[0].time;
+  return `${prefix}📅 *${day.dayName} ${formatDate(day.date)}* — horas libres:\n` +
+         `🕐 ${horas}\n\n` +
+         `Responde con la hora que quieras (por ej. *${ej}*). ` +
+         `Para ver otro día escribe *otro día*; cuando termines, *listo*.`;
 }
 
 // Filtro de horas de pista para un alumno según su fase
@@ -872,30 +883,24 @@ async function sendBookingRequests(force = false) {
       continue;
     }
 
-    const slot = free[0];
+    const day0 = daysWithSlots(free)[0];
     const urgencia =
       dow === 4 ? `⚠️ *ÚLTIMO DÍA*: el plazo cierra HOY a medianoche.` :
       dow === 3 ? `⚠️ El plazo cierra mañana jueves.` :
                   `⚠️ Tienes hasta el jueves para reservar.`;
 
-    // Martes (o manual): presentación completa. Mié/Jue: recordatorio directo.
-    const esInicial = dow === 2 || force;
-    const msg = esInicial
-      ? `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-        `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
-        `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
-        `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-        `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
-        urgencia
-      : `Hola ${st.name} 👋 Aún no tienes clases reservadas para la semana que viene.\n\n` +
-        `Te propongo:\n📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
-        `Responde *SÍ*, un número (ej: *3* clases de golpe), o *NO* para ver más huecos.\n` +
-        urgencia;
+    // Texto de reserva (Twilio / fallback): invita a elegir la hora directamente.
+    const msg =
+      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
+      `Vamos a organizar tus clases de la semana que viene.\n\n` +
+      dayMenuMessage(day0, '') + `\n\n` + urgencia;
 
-    // Mensaje que inicia el bot → plantilla en Meta, texto libre en Twilio
-    const cita = `${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`;
-    await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name, cita], msg);
-    pending[st.phone] = makeSuggestState({ ...st, profId }, free, true, pistaHours);
+    // Mensaje que INICIA el bot → en Meta va la plantilla (solo abre la
+    // conversación); al responder, el bot enseña las horas para elegir.
+    await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+    const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
+    stt.currentDate = day0.date;
+    pending[st.phone] = stt;
     sent++;
   }
   console.log(`✅ Campaña: ${sent} contactados · ${skipped} ya tenían clases (no molestados)`);
@@ -1132,23 +1137,21 @@ app.post('/bot', async (req, res) => {
 
     const nextMon = ymdLocal(nextWeekMonday());
     const pistaHours = await pistaFilterFor(st);
-    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours);
+    const free = await nextFreeSlots(profId, 80, nextMon, pistaHours);
     if (!free.length) {
       await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
       done();
       return;
     }
 
-    const slot = free[0];
-    const msg =
-      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-      `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
-      `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
-      `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-      `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.`;
-
-    await sendWA(from, msg);
-    pending[from] = makeSuggestState({ ...st, profId }, free, true, pistaHours);
+    const day0 = daysWithSlots(free)[0];
+    const st2 = makeSuggestState({ ...st, profId }, free, true, pistaHours);
+    st2.currentDate = day0.date;
+    pending[from] = st2;
+    await sendWA(from,
+      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*. Vamos a organizar tus clases de la semana que viene.\n\n` +
+      dayMenuMessage(day0, '')
+    );
     done();
     return;
   }
@@ -1217,197 +1220,116 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
-    const currentSlot = state.slots[state.idx];
+    // Huecos libres actuales, agrupados por día (excluyendo los ya reservados)
+    const bookedDates = (state.booked || []).map(b => b.date);
+    const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours);
+    const days = daysWithSlots(allFree, bookedDates);
 
-    // ── Atajo: un número ("3" o "quiero 3 clases") reserva N clases
-    //    de golpe, repartidas en días distintos de la semana ──
-    const multiMatch = norm(body).match(/^([1-6])$/) || norm(body).match(/\b([1-6])\s*clases?\b/);
-    if (multiMatch) {
-      const wanted = parseInt(multiMatch[1]);
-      const all = await nextFreeSlots(state.profId, 30, suggestFromDate(state), state.pistaHours);
-      // Repartir: primera hora de cada día distinto; si pide más que días, segundas horas
-      const byDate = {};
-      all.forEach(s => { (byDate[s.date] = byDate[s.date] || []).push(s); });
-      const dates = Object.keys(byDate).sort();
-      const picked = [];
-      for (let ronda = 0; picked.length < wanted && ronda < 8; ronda++) {
-        let added = false;
-        for (const d of dates) {
-          if (picked.length >= wanted) break;
-          if (byDate[d][ronda]) { picked.push(byDate[d][ronda]); added = true; }
-        }
-        if (!added) break;
-      }
-      if (!picked.length) {
-        await sendWA(from, `No quedan huecos disponibles la semana que viene 😔 Llama a la autoescuela.`);
-        done();
-        return;
-      }
-      picked.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-      for (const s of picked) {
-        await bookSlot(state.studentId, state.studentName, state.profId, s);
-      }
-      state.booked = (state.booked || []).concat(picked);
-      state.slots = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
-      state.idx = 0;
-
-      const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
-      await sendWA(from,
-        `✅ ¡Hechas! He reservado tus ${picked.length} clases:\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
-        `¿Quieres alguna más? Responde *SÍ*, otro número, o *listo* para terminar.`
-      );
+    if (!days.length) {
+      delete pending[from];
+      const yaTiene = (state.booked || []).length
+        ? `\n\n📋 *Tus clases:*\n` + state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n')
+        : '';
+      await sendWA(from, `No quedan más huecos libres esta semana.${yaTiene}\n\nSi necesitas algo más, llama a la autoescuela. 📞`);
       done();
       return;
     }
 
-    if (isYes(body)) {
-      // Verificar que sigue libre
-      if (!(await isSlotFree(state.profId, currentSlot.date, currentSlot.time))) {
-        const fresh = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
-        if (!fresh.length) {
-          delete pending[from];
-          await sendWA(from, `Lo siento, ese hueco acaba de ocuparse y no hay más disponibles. Llama a la autoescuela.`);
+    const { dow, hour } = parseBookingText(body);
+
+    // "otro día" / "no" → pasar al siguiente día con huecos
+    if (!hour && (isNo(body) || /siguiente|otro dia|proxim|otra fecha|mas dias/.test(norm(body)))) {
+      const next = days.find(d => d.date !== state.currentDate) || days[0];
+      state.currentDate = next.date;
+      await sendWA(from, dayMenuMessage(next, 'De acuerdo. '));
+      done();
+      return;
+    }
+
+    // El alumno eligió una hora (con o sin día): reservar esa clase
+    if (hour) {
+      const hh = hour.padStart(5, '0');
+      let targetDate = state.currentDate;
+      if (dow) {
+        const df = state.weekMode ? dateForDow(dow) : null;
+        targetDate = df ? df.date
+          : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null);
+      }
+      if (!targetDate) targetDate = days[0].date;
+
+      const dayObj = days.find(d => d.date === targetDate);
+      const match = dayObj ? dayObj.slots.find(s => s.time === hh) : null;
+
+      if (match) {
+        if (!(await isSlotFree(state.profId, match.date, match.time))) {
+          const libres = dayObj.slots.filter(s => s.time !== hh);
+          if (libres.length) {
+            await sendWA(from, `Vaya, las ${hh}h del ${dayObj.dayName} acaban de ocuparse 😅\n\n` + dayMenuMessage({ ...dayObj, slots: libres }, ''));
+          } else {
+            const otro = days.find(d => d.date !== dayObj.date) || days[0];
+            state.currentDate = otro.date;
+            await sendWA(from, `Vaya, esa hora acaba de ocuparse 😅\n\n` + dayMenuMessage(otro, 'Te propongo otro día. '));
+          }
           done();
           return;
         }
-        state.slots = fresh; state.idx = 0;
-        const ns = fresh[0];
-        await sendWA(from, `Ese hueco acaba de ocuparse 😅\n\nTe propongo:\n📅 *${ns.dayName} ${formatDate(ns.date)} a las ${ns.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`);
-        done();
-        return;
-      }
+        await bookSlot(state.studentId, state.studentName, state.profId, match);
+        state.booked = state.booked || [];
+        state.booked.push(match);
 
-      await bookSlot(state.studentId, state.studentName, state.profId, currentSlot);
-      state.booked = state.booked || [];
-      state.booked.push(currentSlot);
-
-      // Siguiente propuesta: un hueco en OTRO día (el siguiente día que el
-      // profesor tenga libre), no otra hora del mismo día ya reservado.
-      const bookedDates = state.booked.map(b => b.date);
-      const remainingRaw = await nextFreeSlots(state.profId, 40, suggestFromDate(state), state.pistaHours);
-      state.slots = slotsSpreadByDay(remainingRaw, bookedDates);
-      state.idx = 0;
-
-      const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
-      if (!state.slots.length) {
-        delete pending[from];
+        const remaining = daysWithSlots(allFree, state.booked.map(b => b.date));
+        const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
+        if (!remaining.length) {
+          delete pending[from];
+          await sendWA(from, `✅ ¡Reservada! *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n📋 *Tus clases:*\n${resumen}\n\nNo quedan más días libres. ¡Listo! 👌`);
+          done();
+          return;
+        }
+        const nextDay = remaining.find(d => d.date !== match.date) || remaining[0];
+        state.currentDate = nextDay.date;
         await sendWA(from,
-          `✅ ¡Reservada!\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
-          `No quedan más días libres esa semana. ¡Listo! 👌`
+          `✅ ¡Reservada! *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n` +
+          `📋 *Tus clases:*\n${resumen}\n\n` +
+          dayMenuMessage(nextDay, '¿Quieres otra? ')
         );
         done();
         return;
       }
-      const sig = state.slots[0];
-      await sendWA(from,
-        `✅ ¡Reservada!\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
-        `Te propongo otra para el *${sig.dayName} ${formatDate(sig.date)} a las ${sig.time}h*.\n` +
-        `¿Te viene bien? *SÍ* o *NO* — o *listo* para terminar.`
-      );
 
-    } else if (isNo(body)) {
-      state.idx++;
-      if (state.idx >= state.slots.length) {
-        const bookedDates2 = (state.booked || []).map(b => b.date);
-        const moreRaw = await nextFreeSlots(state.profId, 40, suggestFromDate(state), state.pistaHours);
-        state.slots = slotsSpreadByDay(moreRaw, bookedDates2);
-        state.idx = 0;
-      }
-      if (!state.slots.length) {
-        delete pending[from];
-        await sendWA(from, `No hay más huecos disponibles en los próximos días. Llama a la autoescuela. 📞`);
-        done();
-        return;
-      }
-      const next = state.slots[state.idx];
-      await sendWA(from,
-        `De acuerdo, te propongo:\n\n📅 *${next.dayName} ${formatDate(next.date)} a las ${next.time}h*\n\n` +
-        `¿Te viene bien? *SÍ* o *NO* — o pregúntame directamente (ej: *"¿el martes a las 10 está libre?"*)`
-      );
-
-    } else {
-      // Texto libre — el alumno pregunta por un día/hora concreto
-      const { dow, hour } = parseBookingText(body);
-      if (dow || hour) {
-        const allFree = await nextFreeSlots(state.profId, 60, suggestFromDate(state), state.pistaHours);
-        const hh = hour ? hour.padStart(5, '0') : null;
-        const NOMBRE_DIA = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
-
-        // Fecha objetivo cuando pregunta por un día
-        const targetDate = dow
-          ? (state.weekMode
-              ? (dateForDow(dow)?.date || null)
-              : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null))
-          : null;
-
-        if (dow && hh) {
-          // Pregunta concreta: "¿el martes a las 10 está libre?"
-          const exact = allFree.find(s => s.date === targetDate && s.time === hh);
-          if (exact) {
-            state.slots = [exact, ...allFree.filter(s => s !== exact)];
-            state.idx = 0;
-            await sendWA(from,
-              `✅ ¡Está libre!\n\n📅 *${exact.dayName} ${formatDate(exact.date)} a las ${exact.time}h*\n\n¿Lo reservo? *SÍ* o *NO*`
-            );
-          } else {
-            const sameDay = targetDate ? allFree.filter(s => s.date === targetDate) : [];
-            if (sameDay.length) {
-              state.slots = [...sameDay, ...allFree.filter(s => !sameDay.includes(s))];
-              state.idx = 0;
-              await sendWA(from,
-                `❌ El ${NOMBRE_DIA[dow]} a las ${hh}h *no está disponible*.\n\n` +
-                `Ese día quedan libres: *${sameDay.map(s => s.time).join('h, ')}h*\n\n` +
-                `Dime cuál te va (ej: *"a las ${sameDay[0].time}"*), o *NO* para ver otros días.`
-              );
-            } else {
-              const cur = state.slots[state.idx];
-              await sendWA(from,
-                `❌ El ${NOMBRE_DIA[dow]} *no queda ningún hueco libre*.\n\n` +
-                `El siguiente disponible es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
-              );
-            }
-          }
-        } else if (dow) {
-          // Pregunta por un día: "¿el martes está libre?"
-          const sameDay = targetDate ? allFree.filter(s => s.date === targetDate) : [];
-          if (sameDay.length) {
-            state.slots = [...sameDay, ...allFree.filter(s => !sameDay.includes(s))];
-            state.idx = 0;
-            await sendWA(from,
-              `✅ El ${NOMBRE_DIA[dow]} ${formatDate(targetDate)} tiene huecos libres:\n\n` +
-              `🕐 *${sameDay.map(s => s.time).join('h, ')}h*\n\n` +
-              `Dime la hora que te va (ej: *"a las ${sameDay[0].time}"*), o *SÍ* para reservar la de las ${sameDay[0].time}h.`
-            );
-          } else {
-            const cur = state.slots[state.idx];
-            await sendWA(from,
-              `❌ El ${NOMBRE_DIA[dow]} *no queda ningún hueco libre*.\n\n` +
-              `El siguiente disponible es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
-            );
-          }
-        } else {
-          // Pregunta por una hora: "¿a las 10 está libre?"
-          // Priorizar el orden de la conversación (si acaba de preguntar por
-          // un día, state.slots empieza por ese día)
-          const exact = state.slots.find(s => s.time === hh) || allFree.find(s => s.time === hh);
-          if (exact) {
-            state.slots = [exact, ...allFree.filter(s => s !== exact)];
-            state.idx = 0;
-            await sendWA(from,
-              `✅ Las ${hh}h están libres el *${exact.dayName} ${formatDate(exact.date)}*.\n\n¿Lo reservo? *SÍ* o *NO*`
-            );
-          } else {
-            const cur = state.slots[state.idx];
-            await sendWA(from,
-              `❌ A las ${hh}h *no queda hueco* esta semana.\n\n` +
-              `El siguiente disponible es:\n📅 *${cur?.dayName} ${formatDate(cur?.date)} a las ${cur?.time}h*\n\n¿Te viene bien? *SÍ* o *NO*`
-            );
-          }
-        }
+      // La hora pedida no está entre las libres de ese día
+      if (dayObj) {
+        await sendWA(from, `Esa hora no está libre el ${dayObj.dayName}. 🤔\n\n` + dayMenuMessage(dayObj, ''));
       } else {
-        await sendWA(from, `Responde *SÍ* para confirmar, *NO* para ver otro hueco, o pregúntame por una hora (ej: *"¿el martes a las 10 está libre?"*) 😊`);
+        const d0 = days[0];
+        state.currentDate = d0.date;
+        await sendWA(from, `Ese día no quedan huecos. Te propongo otro:\n\n` + dayMenuMessage(d0, ''));
       }
+      done();
+      return;
     }
+
+    // Preguntó por un día concreto (sin hora): enseñar sus horas
+    if (dow) {
+      const df = state.weekMode ? dateForDow(dow) : null;
+      const targetDate = df ? df.date
+        : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null);
+      const dayObj = targetDate ? days.find(d => d.date === targetDate) : null;
+      if (dayObj) {
+        state.currentDate = dayObj.date;
+        await sendWA(from, dayMenuMessage(dayObj, ''));
+      } else {
+        const d0 = days[0];
+        state.currentDate = d0.date;
+        await sendWA(from, `Ese día no quedan huecos libres. Te propongo otro:\n\n` + dayMenuMessage(d0, ''));
+      }
+      done();
+      return;
+    }
+
+    // Cualquier otra cosa (SÍ / saludo / no reconocido): enseñar el día actual o el primero
+    const cur = (state.currentDate && days.find(d => d.date === state.currentDate)) || days[0];
+    state.currentDate = cur.date;
+    await sendWA(from, dayMenuMessage(cur, ''));
     done();
     return;
   }
@@ -1571,21 +1493,19 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   const profId = st.profId ?? st.prof_id;
   const nextMon = ymdLocal(nextWeekMonday());
   const pistaHours = await pistaFilterFor(st);
-  const free = await nextFreeSlots(profId, 8, nextMon, pistaHours);
+  const free = await nextFreeSlots(profId, 80, nextMon, pistaHours);
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
-  const slot = free[0];
+  const day0 = daysWithSlots(free)[0];
   const msg =
     `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
-    `Vamos a organizar tus clases de la semana que viene. Te propongo:\n\n` +
-    `📅 *${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h*\n\n` +
-    `¿Te viene bien? Responde *SÍ* para confirmar o *NO* para ver otro hueco.\n` +
-    `💡 Atajo: responde con un número (ej: *3*) y te reservo esas clases repartidas en la semana de una vez.\n` +
-    `⚠️ El plazo cierra el jueves.`;
+    `Vamos a organizar tus clases de la semana que viene.\n\n` +
+    dayMenuMessage(day0, '') + `\n\n⚠️ El plazo cierra el jueves.`;
 
-  const cita = `${slot.dayName} ${formatDate(slot.date)} a las ${slot.time}h`;
-  await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name, cita], msg);
-  pending[st.phone] = makeSuggestState({ ...st, profId }, free, true, pistaHours);
+  await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+  const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
+  stt.currentDate = day0.date;
+  pending[st.phone] = stt;
 
   console.log(`📤 CRM → mensaje manual enviado a ${st.name}`);
   res.json({ ok: true, student: st.name });
