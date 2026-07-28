@@ -79,7 +79,7 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'autoescuela_exit_ver
 const META_APP_SECRET   = process.env.META_APP_SECRET || null;
 const META_API_VER      = process.env.META_API_VERSION || 'v21.0';
 // Nombres de las plantillas aprobadas en Meta (para mensajes que INICIA el bot)
-const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'propuesta_clase';
+const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'reserva_semana';
 const TPL_RECORDATORIO = process.env.META_TPL_RECORDATORIO || 'recordatorio_clase';
 const USE_META = !!(META_TOKEN && META_PHONE_ID);
 
