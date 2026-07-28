@@ -796,6 +796,22 @@ function suggestFromDate(state) {
   return state?.weekMode ? ymdLocal(nextWeekMonday()) : null;
 }
 
+// Reparte los huecos libres en DÍAS distintos: devuelve el primer hueco de
+// cada día (uno por día), saltando los días ya reservados en excludeDates.
+// Sirve para que, al reservar una clase, la siguiente propuesta caiga en otro
+// día en vez de ofrecer otra hora del mismo día.
+function slotsSpreadByDay(freeSlots, excludeDates = []) {
+  const seen = new Set(excludeDates.map(d => String(d).substring(0, 10)));
+  const out = [];
+  for (const s of freeSlots) { // freeSlots viene ordenado por fecha+hora
+    const d = String(s.date).substring(0, 10);
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push(s);
+  }
+  return out;
+}
+
 // Filtro de horas de pista para un alumno según su fase
 async function pistaFilterFor(st) {
   if ((st.fase || 'pista') !== 'pista') return null; // circulación: sin límite
@@ -1264,20 +1280,38 @@ app.post('/bot', async (req, res) => {
       await bookSlot(state.studentId, state.studentName, state.profId, currentSlot);
       state.booked = state.booked || [];
       state.booked.push(currentSlot);
-      const remaining = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
-      state.slots = remaining; state.idx = 0;
+
+      // Siguiente propuesta: un hueco en OTRO día (el siguiente día que el
+      // profesor tenga libre), no otra hora del mismo día ya reservado.
+      const bookedDates = state.booked.map(b => b.date);
+      const remainingRaw = await nextFreeSlots(state.profId, 40, suggestFromDate(state), state.pistaHours);
+      state.slots = slotsSpreadByDay(remainingRaw, bookedDates);
+      state.idx = 0;
 
       const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
+      if (!state.slots.length) {
+        delete pending[from];
+        await sendWA(from,
+          `✅ ¡Reservada!\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
+          `No quedan más días libres esa semana. ¡Listo! 👌`
+        );
+        done();
+        return;
+      }
+      const sig = state.slots[0];
       await sendWA(from,
         `✅ ¡Reservada!\n\n📋 *Tus clases de la semana:*\n${resumen}\n\n` +
-        `¿Quieres otra? Responde *SÍ* para el siguiente hueco, *NO* para ver opciones, o *listo* para terminar.`
+        `Te propongo otra para el *${sig.dayName} ${formatDate(sig.date)} a las ${sig.time}h*.\n` +
+        `¿Te viene bien? *SÍ* o *NO* — o *listo* para terminar.`
       );
 
     } else if (isNo(body)) {
       state.idx++;
       if (state.idx >= state.slots.length) {
-        const more = await nextFreeSlots(state.profId, 8, suggestFromDate(state), state.pistaHours);
-        state.slots = more; state.idx = 0;
+        const bookedDates2 = (state.booked || []).map(b => b.date);
+        const moreRaw = await nextFreeSlots(state.profId, 40, suggestFromDate(state), state.pistaHours);
+        state.slots = slotsSpreadByDay(moreRaw, bookedDates2);
+        state.idx = 0;
       }
       if (!state.slots.length) {
         delete pending[from];
