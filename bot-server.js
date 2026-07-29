@@ -692,8 +692,23 @@ function parseBookingText(text) {
 // WHATSAPP Y NOTIFICACIONES
 // ════════════════════════════════════════════════════════════
 
+// Guarda cada mensaje (entrante/saliente) en Supabase para el historial de
+// chats del CRM. Nunca lanza: si falla, solo se pierde ese registro de log.
+async function logMessage(phone, direction, body) {
+  if (!USE_SUPABASE || !SCHOOL_ID) return;
+  try {
+    await supabase.from('messages').insert({
+      school_id: SCHOOL_ID,
+      phone:     normalizePhone(phone),
+      direction,
+      body:      String(body || '').slice(0, 4000),
+    });
+  } catch (e) { console.error('logMessage:', e.message); }
+}
+
 async function sendWA(to, body) {
   to = normalizePhone(to);
+  logMessage(to, 'out', body); // registro para el historial (no bloquea el envío)
   if (PROVIDER === 'sms')    return sendSMS(to, body);
   if (PROVIDER === 'meta')   return sendWA_meta(to, body);
   if (PROVIDER === 'twilio') return sendWA_twilio(to, body);
@@ -1105,6 +1120,7 @@ app.post('/bot', async (req, res) => {
   const from = parsed.from;
   const body = parsed.body;
   console.log(`\n📥 (${parsed.provider}) ${from}: "${body}"`);
+  logMessage(from, 'in', body); // registro para el historial de chats
 
   let state = pending[from];
 

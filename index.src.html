@@ -1822,7 +1822,32 @@ function Mensajes({students,slots,professors,user}){
   const reminders=slotArr.filter(s=>{const dt=new Date(`${s.date}T${s.time}:00`);return dt>=today&&dt<=in48;});
   const wa=(phone,msg)=>`https://wa.me/34${phone}?text=${encodeURIComponent(msg)}`;
 
+  // ── Historial de conversaciones (mensajes reales del bot) ──
+  const [convos,setConvos]=useState([]);
+  const [chatPhone,setChatPhone]=useState(null);
+  const [chatMsgs,setChatMsgs]=useState([]);
+  const [convLoading,setConvLoading]=useState(false);
+  const last9=p=>(p||'').replace(/\D/g,'').slice(-9);
+  const stuByPhone=ph=>students.find(s=>last9(s.phone)===last9(ph));
+  const loadConvos=async()=>{
+    const sb=getSupabase(),tk=sessionStorage.getItem('crm_token');
+    if(!sb||!tk){setConvos([]);return;}
+    setConvLoading(true);
+    try{const {data,error}=await sb.rpc('crm_messages',{p_token:tk});if(error)throw error;setConvos(Array.isArray(data)?data:[]);}
+    catch(e){setConvos([]);}
+    setConvLoading(false);
+  };
+  const openChat=async ph=>{
+    setChatPhone(ph);setChatMsgs([]);
+    const sb=getSupabase(),tk=sessionStorage.getItem('crm_token');
+    if(!sb||!tk)return;
+    try{const {data,error}=await sb.rpc('crm_messages',{p_token:tk,p_phone:ph});if(error)throw error;setChatMsgs(Array.isArray(data)?data:[]);}
+    catch(e){setChatMsgs([]);}
+  };
+  useEffect(()=>{ if(tab==='conversaciones'&&!chatPhone) loadConvos(); },[tab]);
+
   const tabs=[
+    {id:'conversaciones',label:'💬 Conversaciones'},
     {id:'confirmaciones',label:`Confirmaciones (${pending.length} pend.)`},
     {id:'recordatorios', label:`Recordatorios 48h (${reminders.length})`},
     {id:'simulador',     label:'🤖 Simulador del bot'},
@@ -1853,6 +1878,49 @@ function Mensajes({students,slots,professors,user}){
           ))}
         </div>
       </div>
+
+      {tab==='conversaciones'&&(
+        <div>
+          {!chatPhone&&(
+            <Card style={{overflow:'hidden'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontSize:12,color:'#64748b'}}>{convLoading?'Cargando…':`${convos.length} conversaciones`}</span>
+                <button onClick={loadConvos} style={{fontSize:12,color:'#2563eb',background:'none',border:'none',cursor:'pointer'}}>↻ Actualizar</button>
+              </div>
+              {(!convLoading&&convos.length===0)&&<div style={{padding:32,textAlign:'center',color:'#94a3b8',fontSize:13}}>Aún no hay mensajes.<br/>Aparecerán aquí en cuanto el bot hable con los alumnos por WhatsApp.</div>}
+              {convos.map(c=>{const stu=stuByPhone(c.phone);return(
+                <div key={c.phone} onClick={()=>openChat(c.phone)} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 16px',borderBottom:'1px solid #f8fafc',cursor:'pointer'}}>
+                  <Avatar name={stu?.name||c.phone} color="#16a34a" size={30}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,color:'#091426',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{stu?.name||c.phone}</div>
+                    <div style={{fontSize:11,color:'#64748b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.last_dir==='out'?'Tú: ':''}{c.last_body}</div>
+                  </div>
+                  <div style={{fontSize:10,color:'#94a3b8',flexShrink:0}}>{new Date(c.last_at).toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'})}</div>
+                </div>
+              );})}
+            </Card>
+          )}
+          {chatPhone&&(
+            <Card style={{overflow:'hidden'}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',borderBottom:'1px solid #eef2f7',background:'#f8fafc'}}>
+                <button onClick={()=>{setChatPhone(null);loadConvos();}} style={{background:'none',border:'none',cursor:'pointer',fontSize:18,color:'#334155'}}>←</button>
+                <Avatar name={stuByPhone(chatPhone)?.name||chatPhone} color="#16a34a" size={28}/>
+                <div style={{fontSize:13,fontWeight:600,color:'#091426'}}>{stuByPhone(chatPhone)?.name||chatPhone}<span style={{fontWeight:400,color:'#94a3b8',marginLeft:6}}>{chatPhone}</span></div>
+              </div>
+              <div style={{maxHeight:'55vh',overflowY:'auto',padding:'12px 14px',display:'flex',flexDirection:'column',gap:6,background:'#f7f9fc'}}>
+                {chatMsgs.length===0&&<div style={{textAlign:'center',color:'#94a3b8',fontSize:12,padding:20}}>Sin mensajes</div>}
+                {chatMsgs.map((m,i)=>(
+                  <div key={i} style={{alignSelf:m.direction==='out'?'flex-end':'flex-start',maxWidth:'80%',
+                    background:m.direction==='out'?'#dcf8c6':'#fff',border:'1px solid #e6ebf1',borderRadius:10,padding:'6px 10px'}}>
+                    <div style={{fontSize:12.5,color:'#0b1b33',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{m.body}</div>
+                    <div style={{fontSize:9.5,color:'#94a3b8',textAlign:'right',marginTop:2}}>{new Date(m.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
 
       {tab==='confirmaciones'&&(
         <div>
