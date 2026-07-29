@@ -6458,7 +6458,6 @@ function App() {
         }
         setCloudStatus('error');
         if (retry > 0) {
-          lastLocalChange.current = Date.now();
           instantTimer.current = setTimeout(() => doPush(retry - 1), 4000);
         }
       }
@@ -6603,30 +6602,34 @@ function App() {
       color: '#fff',
       outline: 'none'
     }
-  }), cloudStatus !== 'off' && React.createElement("div", {
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 6,
-      fontSize: 11,
-      marginTop: 6
-    }
-  }, React.createElement("div", {
-    style: {
-      width: 7,
-      height: 7,
-      borderRadius: '50%',
-      flexShrink: 0,
-      background: cloudStatus === 'ok' ? '#38bdf8' : '#ef4444'
-    }
-  }), React.createElement("span", {
-    style: {
-      color: cloudStatus === 'ok' ? '#7dd3fc' : '#fca5a5'
-    }
-  }, cloudStatus === 'ok' ? `Nube${lastCloudSync ? ' · ' + lastCloudSync.toLocaleTimeString('es', {
-    hour: '2-digit',
-    minute: '2-digit'
-  }) : ''}` : 'Error de nube')));
+  }), cloudStatus !== 'off' && (() => {
+    const reciente = lastCloudSync && Date.now() - lastCloudSync.getTime() < 30000;
+    const ok = cloudStatus === 'ok' || reciente;
+    return React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 11,
+        marginTop: 6
+      }
+    }, React.createElement("div", {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: '50%',
+        flexShrink: 0,
+        background: ok ? '#38bdf8' : '#f59e0b'
+      }
+    }), React.createElement("span", {
+      style: {
+        color: ok ? '#7dd3fc' : '#fcd34d'
+      }
+    }, ok ? `Nube${lastCloudSync ? ' · ' + lastCloudSync.toLocaleTimeString('es', {
+      hour: '2-digit',
+      minute: '2-digit'
+    }) : ''}` : 'Reconectando…'));
+  })());
   const ac = schoolConfig?.color || '#fd761a';
   const NAV = user.role === 'admin' ? NAV_ADMIN : NAV_PROF;
   const currentLabel = (NAV.find(n => n.id === page) || {}).label || '';
