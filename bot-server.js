@@ -613,6 +613,13 @@ function slotLabel(s) {
   return `${DAY_LABELS[dow]} ${formatDate(d)} — ${String(s.time).substring(0, 5)}h`;
 }
 
+// Lista formateada de TODAS las próximas clases del alumno (leídas de la base),
+// para que los resúmenes muestren todas y no solo las de la conversación actual.
+async function listaClasesAlumno(studentId) {
+  const mine = await upcomingSlotsFor(studentId, 30);
+  return mine.map(s => `• ${slotLabel(s)}`).join('\n');
+}
+
 // ════════════════════════════════════════════════════════════
 // NORMALIZADORES DE RESPUESTA WHATSAPP
 // ════════════════════════════════════════════════════════════
@@ -1266,10 +1273,9 @@ app.post('/bot', async (req, res) => {
     // ("ok/perfecto") cuando ya hay clases hechas → terminar sin re-preguntar.
     if (isDone(body) || (isSoftAck(body) && yaHechas.length)) {
       delete pending[from];
-      const resumen = yaHechas.length
-        ? `\n\n📋 *Tus clases reservadas:*\n` +
-          yaHechas.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n') +
-          `\n\nTe recordaremos cada una 48h antes.`
+      const lista = await listaClasesAlumno(state.studentId);
+      const resumen = lista
+        ? `\n\n📋 *Tus clases reservadas:*\n${lista}\n\nTe recordaremos cada una 48h antes.`
         : '';
       await sendWA(from, `¡Perfecto ${state.studentName}!${resumen} 🚗`);
       done();
@@ -1283,9 +1289,8 @@ app.post('/bot', async (req, res) => {
 
     if (!days.length) {
       delete pending[from];
-      const yaTiene = (state.booked || []).length
-        ? `\n\n📋 *Tus clases:*\n` + state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n')
-        : '';
+      const lista = await listaClasesAlumno(state.studentId);
+      const yaTiene = lista ? `\n\n📋 *Tus clases:*\n${lista}` : '';
       await sendWA(from, `No quedan más huecos libres esta semana.${yaTiene}\n\nSi necesitas algo más, llama a la autoescuela. 📞`);
       done();
       return;
@@ -1351,7 +1356,8 @@ app.post('/bot', async (req, res) => {
         state.booked.push(match);
 
         const remaining = daysWithSlots(allFree, state.booked.map(b => b.date));
-        const resumen = state.booked.map(b => `• ${b.dayName} ${formatDate(b.date)} — ${b.time}h`).join('\n');
+        // Resumen con TODAS las clases del alumno (ya guardada la recién hecha)
+        const resumen = await listaClasesAlumno(state.studentId);
         if (!remaining.length) {
           delete pending[from];
           await sendWA(from, `✅ ¡Reservada! *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n📋 *Tus clases:*\n${resumen}\n\nNo quedan más días libres. ¡Listo! 👌`);
@@ -1562,6 +1568,9 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   if (!st)             return res.status(404).json({ error: 'Alumno no encontrado' });
   if (!st.phone)       return res.status(400).json({ error: 'El alumno no tiene teléfono' });
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
+  // Si ya está en una conversación abierta, no reenviar el saludo (evita el
+  // "Hola 👋" duplicado encima de una charla ya en curso).
+  if (pending[st.phone]) return res.json({ ok: true, student: st.name, note: 'ya en conversación' });
 
   const profId = st.profId ?? st.prof_id;
   const nextMon = ymdLocal(nextWeekMonday());
