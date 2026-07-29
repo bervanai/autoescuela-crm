@@ -3144,8 +3144,8 @@ function App(){
         }
         setCloudStatus('error');
         if(retry>0){
-          // Mantener el pull a raya mientras reintentamos (no pisar la edición)
-          lastLocalChange.current=Date.now();
+          // Reintentar, pero SIN bloquear la descarga periódica: si la nube está
+          // bien (guardó por otra vía), el próximo pull pondrá el estado en verde.
           instantTimer.current=setTimeout(()=>doPush(retry-1),4000);
         }
       }
@@ -3212,17 +3212,23 @@ function App(){
             border:'1px solid rgba(255,255,255,.15)',background:'rgba(255,255,255,.07)',
             color:'#fff',outline:'none'}}/>
       )}
-      {cloudStatus!=='off'&&(
-        <div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,marginTop:6}}>
-          <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
-            background:cloudStatus==='ok'?'#38bdf8':'#ef4444'}}/>
-          <span style={{color:cloudStatus==='ok'?'#7dd3fc':'#fca5a5'}}>
-            {cloudStatus==='ok'
-              ?`Nube${lastCloudSync?' · '+lastCloudSync.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'}):''}`
-              :'Error de nube'}
-          </span>
-        </div>
-      )}
+      {cloudStatus!=='off'&&(()=>{
+        // Sano si guardó/descargó con éxito hace poco (aunque un intento suelto
+        // fallara). Solo avisamos si lleva un rato sin sincronizar de verdad.
+        const reciente=lastCloudSync&&(Date.now()-lastCloudSync.getTime()<30000);
+        const ok=cloudStatus==='ok'||reciente;
+        return(
+          <div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,marginTop:6}}>
+            <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
+              background:ok?'#38bdf8':'#f59e0b'}}/>
+            <span style={{color:ok?'#7dd3fc':'#fcd34d'}}>
+              {ok
+                ?`Nube${lastCloudSync?' · '+lastCloudSync.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'}):''}`
+                :'Reconectando…'}
+            </span>
+          </div>
+        );
+      })()}
     </div>
   );
 
