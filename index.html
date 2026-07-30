@@ -2874,7 +2874,21 @@ function SlotForm({
     onClick: onClose,
     className: btnG
   }, "Cancelar"), React.createElement("button", {
-    onClick: () => onSave(f),
+    onClick: () => {
+      if (!f.date) {
+        alert('⚠️ Pon la fecha de la clase.');
+        return;
+      }
+      if (!f.profId) {
+        alert('⚠️ Selecciona el profesor.');
+        return;
+      }
+      if (!f.studentId) {
+        alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.');
+        return;
+      }
+      onSave(f);
+    },
     className: btnO
   }, React.createElement(Icon, {
     name: "save",
@@ -6178,31 +6192,6 @@ function App() {
     const sb = getSupabase();
     const token = sessionStorage.getItem('crm_token');
     if (!sb || !token) return;
-    const cur = {};
-    Object.values(slots).filter(s => s.id && s.date && s.time).forEach(s => {
-      cur[s.id] = normSlotDB(s);
-    });
-    const upserts = [];
-    Object.entries(cur).forEach(([id, row]) => {
-      const j = JSON.stringify(row);
-      if (syncedSlots.current[id] !== j) upserts.push(row);
-    });
-    const deleteIds = Object.keys(syncedSlots.current).filter(id => !cur[id]);
-    if (upserts.length || deleteIds.length) {
-      const {
-        error
-      } = await sb.rpc('crm_sync_slots', {
-        p_token: token,
-        p_upserts: upserts,
-        p_delete_ids: deleteIds
-      });
-      if (error) throw new Error(error.message);
-      const snap = {};
-      Object.entries(cur).forEach(([id, row]) => {
-        snap[id] = JSON.stringify(row);
-      });
-      syncedSlots.current = snap;
-    }
     const normProf = p => ({
       id: p.id,
       name: p.name,
@@ -6239,7 +6228,7 @@ function App() {
       type: v.type || 'B'
     });
     const {
-      error
+      error: eData
     } = await sb.rpc('crm_save_data', {
       p_token: token,
       p_professors: (professors || []).map(normProf),
@@ -6250,9 +6239,38 @@ function App() {
       p_blocked: collectBlockedRows(),
       p_exam_days: examDays || []
     });
-    if (error) {
-      if ((error.message || '').includes('SESION_INVALIDA')) throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
-      throw new Error(error.message);
+    if (eData) {
+      if ((eData.message || '').includes('SESION_INVALIDA')) throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
+      throw new Error(eData.message);
+    }
+    const cur = {};
+    Object.values(slots).filter(s => s.id && s.date && s.time).forEach(s => {
+      cur[s.id] = normSlotDB(s);
+    });
+    const upserts = [];
+    Object.entries(cur).forEach(([id, row]) => {
+      const j = JSON.stringify(row);
+      if (syncedSlots.current[id] !== j) upserts.push(row);
+    });
+    const deleteIds = Object.keys(syncedSlots.current).filter(id => !cur[id]);
+    if (upserts.length || deleteIds.length) {
+      const {
+        data,
+        error
+      } = await sb.rpc('crm_sync_slots', {
+        p_token: token,
+        p_upserts: upserts,
+        p_delete_ids: deleteIds
+      });
+      if (error) throw new Error(error.message);
+      if (data && typeof data.upserted === 'number' && data.upserted < upserts.length) {
+        throw new Error('Alguna clase no se pudo guardar. Revisa que tenga alumno y profesor asignados.');
+      }
+      const snap = {};
+      Object.entries(cur).forEach(([id, row]) => {
+        snap[id] = JSON.stringify(row);
+      });
+      syncedSlots.current = snap;
     }
   };
   const loadFromSupabase = async () => {

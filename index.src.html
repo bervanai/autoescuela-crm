@@ -1298,7 +1298,12 @@ function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
       {isAdmin?(
         <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
           <button onClick={onClose} className={btnG}>Cancelar</button>
-          <button onClick={()=>onSave(f)} className={btnO}><Icon name="save" size={17}/>Guardar</button>
+          <button onClick={()=>{
+            if(!f.date){alert('⚠️ Pon la fecha de la clase.');return;}
+            if(!f.profId){alert('⚠️ Selecciona el profesor.');return;}
+            if(!f.studentId){alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.');return;}
+            onSave(f);
+          }} className={btnO}><Icon name="save" size={17}/>Guardar</button>
         </div>
       ):(
         <div style={{textAlign:'center',fontSize:12,color:'#94a3b8',marginTop:12,padding:'8px',
@@ -2922,26 +2927,14 @@ function App(){
     const sb=getSupabase();
     const token=sessionStorage.getItem('crm_token');
     if(!sb||!token)return;
-    // Diff de clases
-    const cur={};
-    Object.values(slots).filter(s=>s.id&&s.date&&s.time).forEach(s=>{cur[s.id]=normSlotDB(s);});
-    const upserts=[];
-    Object.entries(cur).forEach(([id,row])=>{
-      const j=JSON.stringify(row);
-      if(syncedSlots.current[id]!==j)upserts.push(row);
-    });
-    const deleteIds=Object.keys(syncedSlots.current).filter(id=>!cur[id]);
-    if(upserts.length||deleteIds.length){
-      const {error}=await sb.rpc('crm_sync_slots',{p_token:token,p_upserts:upserts,p_delete_ids:deleteIds});
-      if(error)throw new Error(error.message);
-      const snap={};Object.entries(cur).forEach(([id,row])=>{snap[id]=JSON.stringify(row);});
-      syncedSlots.current=snap;
-    }
-    // Resto de tablas (sin clases) por reemplazo
+    // ── 1º ALUMNOS / PROFES / VEHÍCULOS ──────────────────────────────
+    // Una clase apunta a su alumno y su profesor: deben existir en la nube
+    // ANTES de guardar la clase. Si no, la base de datos la rechaza en
+    // silencio y al recargar desaparece. Por eso esto va PRIMERO.
     const normProf=p=>({id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false,licenses:p.licenses||[],class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),vehicle_id:p.vehicleId||p.vehicle_id||null,schedule:p.schedule||null});
     const normStu=s=>({id:s.id,name:s.name,phone:s.phone||null,prof_id:s.profId||s.prof_id||null,license:s.license||'B',vehicle_type:s.vehicleType||s.vehicle_type||'manual',num_clases:s.numClases??s.num_clases??0,bono:s.bono||null,tasas_pagadas:!!s.tasasPagadas,active:s.active!==false,bot_active:s.botActive!==false,exam_date:s.examDate||s.exam_date||null,exam_result:s.examResult||s.exam_result||null,fase:s.fase||'pista',notes:s.notes||null});
     const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
-    const {error}=await sb.rpc('crm_save_data',{
+    const {error:eData}=await sb.rpc('crm_save_data',{
       p_token:token,
       p_professors:(professors||[]).map(normProf),
       p_students:(students||[]).filter(s=>s.id&&s.name).map(normStu),
@@ -2951,10 +2944,31 @@ function App(){
       p_blocked:collectBlockedRows(),
       p_exam_days:examDays||[],
     });
-    if(error){
-      if((error.message||'').includes('SESION_INVALIDA'))
+    if(eData){
+      if((eData.message||'').includes('SESION_INVALIDA'))
         throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
-      throw new Error(error.message);
+      throw new Error(eData.message);
+    }
+    // ── 2º CLASES (diff granular; nunca borra las del bot) ────────────
+    const cur={};
+    Object.values(slots).filter(s=>s.id&&s.date&&s.time).forEach(s=>{cur[s.id]=normSlotDB(s);});
+    const upserts=[];
+    Object.entries(cur).forEach(([id,row])=>{
+      const j=JSON.stringify(row);
+      if(syncedSlots.current[id]!==j)upserts.push(row);
+    });
+    const deleteIds=Object.keys(syncedSlots.current).filter(id=>!cur[id]);
+    if(upserts.length||deleteIds.length){
+      const {data,error}=await sb.rpc('crm_sync_slots',{p_token:token,p_upserts:upserts,p_delete_ids:deleteIds});
+      if(error)throw new Error(error.message);
+      // Verificación anti-pérdida: si la nube guardó MENOS clases de las que
+      // enviamos, alguna se rechazó (alumno o profesor no válido). No la damos
+      // por sincronizada: así el panel avisa en vez de perderla en silencio.
+      if(data&&typeof data.upserted==='number'&&data.upserted<upserts.length){
+        throw new Error('Alguna clase no se pudo guardar. Revisa que tenga alumno y profesor asignados.');
+      }
+      const snap={};Object.entries(cur).forEach(([id,row])=>{snap[id]=JSON.stringify(row);});
+      syncedSlots.current=snap;
     }
   };
 
