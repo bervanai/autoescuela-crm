@@ -1421,7 +1421,10 @@ app.post('/bot', async (req, res) => {
 // ════════════════════════════════════════════════════════════
 
 // Mar, Mié, Jue a las 9:00 → solicitar reservas
-cron.schedule('0 9 * * 2,3,4', sendBookingRequests, { timezone: 'Europe/Madrid' });
+// El bot SOLO inicia conversación los MARTES a las 9:00. La ventana de reserva
+// sigue abierta hasta el jueves 23:59 para que los alumnos respondan, pero el
+// bot no vuelve a escribirles miércoles/jueves.
+cron.schedule('0 9 * * 2', sendBookingRequests, { timezone: 'Europe/Madrid' });
 
 // Cada hora → comprobar recordatorios 48h
 cron.schedule('0 * * * *', sendReminders, { timezone: 'Europe/Madrid' });
@@ -1429,25 +1432,12 @@ cron.schedule('0 * * * *', sendReminders, { timezone: 'Europe/Madrid' });
 // Jueves 23:59 → avisar a quien no reservó y limpiar pendientes
 cron.schedule('59 23 * * 4', async () => {
   console.log('\n🔒 Cerrando ventana de reservas...');
-  const students  = await loadStudents();
-  const slots     = await loadSlots();
-  const week      = nextWeekDates();
-  const weekDates = week.map(w => w.date);
+  const students = await loadStudents();
 
+  // Cierre en SILENCIO: el bot no escribe fuera del martes. Solo limpia las
+  // conversaciones abiertas para que no queden colgadas.
   for (const st of students.filter(s => s.active && s.phone)) {
-    const stPending = pending[st.phone];
-    if (!stPending || stPending.type !== 'suggest') continue;
-    const alreadyHas = slots.some(
-      s => (s.studentId ?? s.student_id) === st.id
-        && weekDates.includes(String(s.date).substring(0, 10))
-        && s.status !== 'cancelled'
-    );
-    if (!alreadyHas) {
-      await sendWA(st.phone,
-        `Hola ${st.name}, el plazo de reserva para la semana que viene ha cerrado.\nSi necesitas clase, llama a la autoescuela. ¡Hasta pronto! 👋`
-      );
-    }
-    delete pending[st.phone];
+    if (pending[st.phone]) delete pending[st.phone];
   }
 }, { timezone: 'Europe/Madrid' });
 
