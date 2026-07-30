@@ -1119,6 +1119,10 @@ app.post('/bot', async (req, res) => {
   // Se declara antes de cualquier uso para evitar el TDZ de `const`.
   const done = () => { if (!isMeta) res.send('<Response></Response>'); };
 
+  // Blindaje: cualquier error al procesar un mensaje se captura aquí para que
+  // NUNCA tumbe el proceso. Un mensaje raro o un fallo puntual de Supabase no
+  // puede dejar el bot sin servicio ni borrar las conversaciones en curso.
+  try {
   const parsed = parseIncoming(req.body);
   if (!parsed || !parsed.body) {           // status update u otro evento: ignorar
     done();
@@ -1414,13 +1418,17 @@ app.post('/bot', async (req, res) => {
   }
 
   done();
+  } catch (err) {
+    console.error('❌ Error procesando el mensaje entrante:', err && err.message ? err.message : err);
+    try { done(); } catch (_) {}
+  }
 });
 
 // ════════════════════════════════════════════════════════════
 // CRONS
 // ════════════════════════════════════════════════════════════
 
-// Mar, Mié, Jue a las 9:00 → solicitar reservas
+// Martes a las 9:00 → solicitar reservas
 // El bot SOLO inicia conversación los MARTES a las 9:00. La ventana de reserva
 // sigue abierta hasta el jueves 23:59 para que los alumnos respondan, pero el
 // bot no vuelve a escribirles miércoles/jueves.
@@ -1639,4 +1647,15 @@ app.listen(PORT, () => {
   console.log('POST /api/send-booking/:studentId');
   console.log('POST /api/send-reminder/:slotId');
   console.log(`GET  /test/reservas | /test/recordatorios ${process.env.BOT_API_KEY ? '(protegidos con clave)' : '(SIN clave — configurar BOT_API_KEY)'}`);
+});
+
+// ── Red de seguridad global ──────────────────────────────────────────────
+// Última barrera: si un error async se escapa de todos los try/catch, aquí se
+// registra en vez de tumbar el proceso. Mantiene el bot vivo (y las
+// conversaciones en curso) ante cualquier fallo imprevisto.
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️  unhandledRejection:', reason && reason.message ? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('⚠️  uncaughtException:', err && err.message ? err.message : err);
 });
