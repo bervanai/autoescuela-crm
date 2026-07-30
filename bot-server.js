@@ -101,8 +101,53 @@ const AVAIL_FILE     = path.join(__dirname, 'crm_availability.json');
 const HOURS_DEFAULT = ['09:00','10:00','11:00','12:00','16:00','17:00','18:00','19:00'];
 const DAY_KEY_MAP   = { 1:'lun', 2:'mar', 3:'mie', 4:'jue', 5:'vie', 6:'sab' };
 
-// ── Conversaciones activas (siempre en RAM) ───────────────
+// ── Conversaciones activas ────────────────────────────────
+// En RAM para acceso rápido, PERO también se guardan en Supabase (tabla
+// bot_pending) para que sobrevivan a los reinicios/despliegues de Railway.
+// Sin esto, cada despliegue borraba las conversaciones a medias.
 const pending = {};
+
+// Guarda (o borra) en la nube el estado de conversación de un teléfono.
+// Se llama tras cada mutación de `pending` para no perder el hilo.
+async function persistPending(phone) {
+  if (!USE_SUPABASE || !phone) return;
+  try {
+    const st = pending[phone];
+    if (st) {
+      await supabase.from('bot_pending').upsert({
+        phone,
+        school_id:  SCHOOL_ID || null,
+        state:      st,
+        expires_at: st.expires ? new Date(st.expires).toISOString() : null,
+        updated_at: new Date().toISOString(),
+      });
+    } else {
+      await supabase.from('bot_pending').delete().eq('phone', phone);
+    }
+  } catch (e) { console.error('persistPending:', e.message); }
+}
+
+// Al arrancar, restaura las conversaciones no caducadas desde la nube.
+async function loadPending() {
+  if (!USE_SUPABASE) return;
+  try {
+    const { data, error } = await supabase
+      .from('bot_pending').select('phone,state,expires_at');
+    if (error) { console.error('loadPending:', error.message); return; }
+    const now = Date.now();
+    let restored = 0;
+    for (const row of (data || [])) {
+      const exp = row.expires_at ? new Date(row.expires_at).getTime() : null;
+      if (exp && exp < now) {
+        supabase.from('bot_pending').delete().eq('phone', row.phone).then(() => {}, () => {});
+        continue;
+      }
+      pending[row.phone] = row.state;
+      restored++;
+    }
+    if (restored) console.log(`🔄 Conversaciones restauradas desde la nube: ${restored}`);
+  } catch (e) { console.error('loadPending:', e.message); }
+}
 
 // ── Normalización de teléfonos ────────────────────────────
 // Las autoescuelas escriben los números sin prefijo ("644299702"):
@@ -944,6 +989,7 @@ async function sendBookingRequests(force = false) {
     const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
     stt.currentDate = day0.date;
     pending[st.phone] = stt;
+    await persistPending(st.phone);
     sent++;
   }
   console.log(`✅ Campaña: ${sent} contactados · ${skipped} ya tenían clases (no molestados)`);
@@ -1122,6 +1168,7 @@ app.post('/bot', async (req, res) => {
   // Blindaje: cualquier error al procesar un mensaje se captura aquí para que
   // NUNCA tumbe el proceso. Un mensaje raro o un fallo puntual de Supabase no
   // puede dejar el bot sin servicio ni borrar las conversaciones en curso.
+  let convPhone = null;
   try {
   const parsed = parseIncoming(req.body);
   if (!parsed || !parsed.body) {           // status update u otro evento: ignorar
@@ -1129,6 +1176,7 @@ app.post('/bot', async (req, res) => {
     return;
   }
   const from = parsed.from;
+  convPhone = from;
   const body = parsed.body;
   console.log(`\n📥 (${parsed.provider}) ${from}: "${body}"`);
   logMessage(from, 'in', body); // registro para el historial de chats
@@ -1421,6 +1469,10 @@ app.post('/bot', async (req, res) => {
   } catch (err) {
     console.error('❌ Error procesando el mensaje entrante:', err && err.message ? err.message : err);
     try { done(); } catch (_) {}
+  } finally {
+    // Guardar en la nube el estado (o su borrado) tras atender el mensaje,
+    // para que la conversación sobreviva a cualquier reinicio del bot.
+    if (convPhone) persistPending(convPhone).catch(() => {});
   }
 });
 
@@ -1437,6 +1489,36 @@ cron.schedule('0 9 * * 2', sendBookingRequests, { timezone: 'Europe/Madrid' });
 // Cada hora → comprobar recordatorios 48h
 cron.schedule('0 * * * *', sendReminders, { timezone: 'Europe/Madrid' });
 
+// Comprueba a diario que el token de Meta sigue funcionando. Si deja de valer
+// (caducó o perdió permisos), el bot no podría enviar mensajes: avisa al admin
+// por WhatsApp para poder renovarlo antes de que afecte a los alumnos.
+async function checkMetaToken() {
+  if (PROVIDER !== 'meta') return;
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(
+      `https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}?fields=display_phone_number`,
+      { headers: { Authorization: `Bearer ${META_TOKEN}` }, signal: ctl.signal }
+    );
+    clearTimeout(timer);
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      const motivo = body?.error?.message || `HTTP ${r.status}`;
+      console.error(`🚨 Token de Meta NO válido: ${motivo}`);
+      await sendWA(NOTIFY_ADMIN,
+        `🚨 *Aviso del bot de ${SCHOOL_NAME}*\n\n` +
+        `El token de WhatsApp ha dejado de funcionar (${motivo}).\n` +
+        `El bot no puede enviar mensajes hasta renovarlo en Railway (META_TOKEN).`
+      );
+    } else {
+      console.log('✅ Token de Meta verificado (chequeo diario)');
+    }
+  } catch (e) { console.error('checkMetaToken:', e.message); }
+}
+// Todos los días a las 8:00 (antes de la campaña de los martes a las 9:00)
+cron.schedule('0 8 * * *', checkMetaToken, { timezone: 'Europe/Madrid' });
+
 // Jueves 23:59 → avisar a quien no reservó y limpiar pendientes
 cron.schedule('59 23 * * 4', async () => {
   console.log('\n🔒 Cerrando ventana de reservas...');
@@ -1445,7 +1527,7 @@ cron.schedule('59 23 * * 4', async () => {
   // Cierre en SILENCIO: el bot no escribe fuera del martes. Solo limpia las
   // conversaciones abiertas para que no queden colgadas.
   for (const st of students.filter(s => s.active && s.phone)) {
-    if (pending[st.phone]) delete pending[st.phone];
+    if (pending[st.phone]) { delete pending[st.phone]; await persistPending(st.phone); }
   }
 }, { timezone: 'Europe/Madrid' });
 
@@ -1586,6 +1668,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
   stt.currentDate = day0.date;
   pending[st.phone] = stt;
+  await persistPending(st.phone);
 
   console.log(`📤 CRM → mensaje manual enviado a ${st.name}`);
   res.json({ ok: true, student: st.name });
@@ -1621,6 +1704,7 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
     slotId:      slot.id,
     expires:     Date.now() + 50 * 3600000,
   };
+  await persistPending(st.phone);
 
   console.log(`📤 CRM → recordatorio manual enviado a ${st.name}`);
   res.json({ ok: true, student: st.name });
@@ -1634,6 +1718,7 @@ const PORT = parseInt(process.env.PORT || '3002', 10);
 app.listen(PORT, () => {
   refreshSchoolName();                             // nombre real desde Supabase
   setInterval(refreshSchoolName, 3600000);         // refrescar cada hora
+  loadPending();                                   // restaurar conversaciones en curso
   console.log(`\n🚗 AutoEscuela Bot — Puerto ${PORT}`);
   console.log('────────────────────────────────────────');
   console.log(`💾 Modo datos:   ${USE_SUPABASE ? 'Supabase' : 'JSON local'}`);
