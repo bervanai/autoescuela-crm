@@ -744,6 +744,37 @@ function parseBookingText(text) {
 // WHATSAPP Y NOTIFICACIONES
 // ════════════════════════════════════════════════════════════
 
+// fetch con reintentos para la API de Meta. Ante un fallo TRANSITORIO (red
+// caída, 429 rate-limit, 5xx del servidor) reintenta con espera creciente, para
+// que un bache puntual no pierda un mensaje. Ante un error DEFINITIVO (4xx como
+// token inválido o número mal formado) devuelve la respuesta sin reintentar.
+async function metaFetch(url, options, tries = 3) {
+  let last = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, options);
+      if (r.ok || (r.status < 500 && r.status !== 429)) return r;
+      last = `HTTP ${r.status}`;
+    } catch (e) { last = e.message; }
+    if (i < tries - 1) await new Promise(res => setTimeout(res, 800 * (i + 1)));
+  }
+  throw new Error('Meta no disponible tras reintentos: ' + last);
+}
+
+// Anti-duplicados: Meta puede reenviar el mismo webhook. Recordamos los últimos
+// ids de mensaje procesados para no atenderlos (ni reservar) dos veces.
+const seenMsgIds = new Map();
+function alreadySeen(id) {
+  if (!id) return false;
+  const now = Date.now();
+  if (seenMsgIds.size > 800) {                     // purga de ids con más de 10 min
+    for (const [k, t] of seenMsgIds) if (now - t > 600000) seenMsgIds.delete(k);
+  }
+  if (seenMsgIds.has(id)) return true;
+  seenMsgIds.set(id, now);
+  return false;
+}
+
 // Guarda cada mensaje (entrante/saliente) en Supabase para el historial de
 // chats del CRM. Nunca lanza: si falla, solo se pierde ese registro de log.
 async function logMessage(phone, direction, body) {
@@ -783,7 +814,7 @@ async function sendSMS(to, body) {
 async function sendWA_meta(to, body) {
   const num = String(to).replace(/^\+/, ''); // Meta quiere el número sin '+'
   try {
-    const r = await fetch(`https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}/messages`, {
+    const r = await metaFetch(`https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}/messages`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${META_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -818,7 +849,7 @@ async function sendTemplateMeta(to, templateName, params = [], lang = 'es') {
     },
   };
   try {
-    const r = await fetch(`https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}/messages`, {
+    const r = await metaFetch(`https://graph.facebook.com/${META_API_VER}/${META_PHONE_ID}/messages`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${META_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1136,11 +1167,11 @@ function parseIncoming(reqBody) {
   if (msg) {
     // Solo mensajes de texto; ignorar status (delivered/read) y otros tipos
     const text = msg.text?.body ?? msg.button?.text ?? msg.interactive?.button_reply?.title ?? '';
-    return { from: '+' + String(msg.from).replace(/^\+/, ''), body: String(text).trim(), provider: 'meta' };
+    return { from: '+' + String(msg.from).replace(/^\+/, ''), body: String(text).trim(), provider: 'meta', id: msg.id || null };
   }
   // Twilio: { From:'whatsapp:+34...', Body:'...' }
   if (reqBody?.From) {
-    return { from: String(reqBody.From).replace('whatsapp:', ''), body: String(reqBody.Body || '').trim(), provider: 'twilio' };
+    return { from: String(reqBody.From).replace('whatsapp:', ''), body: String(reqBody.Body || '').trim(), provider: 'twilio', id: reqBody.MessageSid || null };
   }
   return null;
 }
@@ -1178,6 +1209,13 @@ app.post('/bot', async (req, res) => {
   const from = parsed.from;
   convPhone = from;
   const body = parsed.body;
+  // Idempotencia: si Meta reenvía el mismo webhook, no lo procesamos dos veces
+  // (evita respuestas y reservas duplicadas).
+  if (alreadySeen(parsed.id)) {
+    console.log(`↩️  Mensaje duplicado ignorado (${parsed.id})`);
+    done();
+    return;
+  }
   console.log(`\n📥 (${parsed.provider}) ${from}: "${body}"`);
   logMessage(from, 'in', body); // registro para el historial de chats
 
@@ -1502,7 +1540,11 @@ async function checkMetaToken() {
       { headers: { Authorization: `Bearer ${META_TOKEN}` }, signal: ctl.signal }
     );
     clearTimeout(timer);
-    if (!r.ok) {
+    if (r.ok) {
+      console.log('✅ Token de Meta verificado (chequeo diario)');
+    } else if (r.status >= 400 && r.status < 500) {
+      // Solo un 4xx (token caducado / sin permisos) es un fallo DEFINITIVO del
+      // token. Un 5xx o un timeout son baches de Meta: no disparan falsa alarma.
       const body = await r.json().catch(() => ({}));
       const motivo = body?.error?.message || `HTTP ${r.status}`;
       console.error(`🚨 Token de Meta NO válido: ${motivo}`);
@@ -1512,9 +1554,9 @@ async function checkMetaToken() {
         `El bot no puede enviar mensajes hasta renovarlo en Railway (META_TOKEN).`
       );
     } else {
-      console.log('✅ Token de Meta verificado (chequeo diario)');
+      console.warn(`⚠️  Chequeo de token: Meta respondió ${r.status} (bache temporal, sin alarma)`);
     }
-  } catch (e) { console.error('checkMetaToken:', e.message); }
+  } catch (e) { console.error('checkMetaToken (sin alarma):', e.message); }
 }
 // Todos los días a las 8:00 (antes de la campaña de los martes a las 9:00)
 cron.schedule('0 8 * * *', checkMetaToken, { timezone: 'Europe/Madrid' });
