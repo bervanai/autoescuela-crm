@@ -578,6 +578,24 @@ function dateForDow(dow) {
 // LÓGICA PRINCIPAL — HUECOS LIBRES
 // ════════════════════════════════════════════════════════════
 
+// Duración estándar de una clase práctica (minutos). Fuente única de verdad.
+const SLOT_MIN = 45;
+function toMin(t){ const [h,m] = String(t).substring(0,5).split(':').map(Number); return h*60+(m||0); }
+function rangesOverlap(aStart, aDur, bStart, bDur){ return aStart < bStart+bDur && bStart < aStart+aDur; }
+// ¿Existe ya una clase que SE SOLAPE con [time, time+dur) para ese profe/día?
+// Clave para que clases de 45 min no se pisen (evita el "desfase" de horas).
+function overlapsExisting(slots, profId, date, time, dur = SLOT_MIN){
+  const aStart = toMin(time);
+  const d10 = String(date).substring(0,10);
+  return slots.some(s => {
+    if (!(s.profId === profId || s.prof_id === profId)) return false;
+    if (String(s.date).substring(0,10) !== d10) return false;
+    if (!(s.studentId || s.student_id)) return false;
+    if (s.status === 'cancelled') return false;
+    return rangesOverlap(aStart, dur, toMin(String(s.time).substring(0,5)), s.duration || SLOT_MIN);
+  });
+}
+
 async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null) {
   // Una sola ronda de consultas en paralelo (antes: una por día/hora → lento)
   const [slots, examDays, avail, blocked] = await Promise.all([
@@ -603,13 +621,9 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
       if (free.length >= count) break;
       if (pistaDia && !pistaDia.includes(hour)) continue; // fuera del horario de pista
       if (isBlockedSlotSync(blocked, profId, date, hour)) continue;
-      const taken = slots.some(
-        s => (s.profId === profId || s.prof_id === profId)
-          && String(s.date).substring(0, 10) === date
-          && String(s.time).substring(0, 5) === hour
-          && (s.studentId || s.student_id)
-          && s.status !== 'cancelled'
-      );
+      // Ocupado si CUALQUIER clase existente se solapa con estos 45 min (no solo
+      // si empieza a la misma hora). Así las clases nunca se pisan.
+      const taken = overlapsExisting(slots, profId, date, hour);
       if (!taken) {
         free.push({
           date,
@@ -628,13 +642,7 @@ async function isSlotFree(profId, date, time) {
   ]);
   if (examDays.includes(String(date).substring(0, 10))) return false;
   if (isBlockedSlotSync(blocked, profId, date, String(time).substring(0, 5))) return false;
-  return !slots.some(
-    s => (s.profId === profId || s.prof_id === profId)
-      && String(s.date).substring(0, 10) === date
-      && String(s.time).substring(0, 5) === time
-      && (s.studentId || s.student_id)
-      && s.status !== 'cancelled'
-  );
+  return !overlapsExisting(slots, profId, date, String(time).substring(0, 5));
 }
 
 // ── Próximas clases reservadas de un alumno (ordenadas) ──
@@ -1089,6 +1097,14 @@ async function sendReminders() {
 
 let _slotSeq = 0;
 async function bookSlot(studentId, studentName, profId, slot) {
+  // Guarda anti-solape: entre ofrecer la hora y reservarla, otra reserva pudo
+  // ocupar un tramo que se solapa (el índice único solo pilla la MISMA hora
+  // exacta, no un solape de 45 min). Si se solapa, no reservamos.
+  const existentes = await loadSlots();
+  if (overlapsExisting(existentes, profId, slot.date, String(slot.time).substring(0,5))) {
+    console.error(`❌ Reserva NO guardada (se solapa con otra clase): ${studentName} → ${slot.date} ${slot.time}`);
+    return null;
+  }
   // Sufijo incremental: evita colisión de PK al reservar varias clases
   // en el mismo milisegundo (atajo "3 clases")
   const newSlot = {
