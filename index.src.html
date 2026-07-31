@@ -1400,6 +1400,23 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const toggleExam=d=>{if(!isAdmin)return;setExamDays(ds=>ds.includes(d)?ds.filter(x=>x!==d):[...ds,d]);};
   const saveSlot=f=>{const k=`${f.date}_${f.time}_${f.profId}`;setSlots(ss=>({...ss,[k]:{...f,id:k}}));setAdding(null);setEditing(null);};
   const delSlot=id=>{setSlots(ss=>{const n={...ss};delete n[id];return n;});setEditing(null);};
+  // ── Acciones masivas: seleccionar varias clases y operarlas de golpe ──
+  const [selMode,setSelMode]=useState(false);
+  const [sel,setSel]=useState(()=>new Set());
+  const toggleSel=id=>setSel(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
+  const clearSel=()=>setSel(new Set());
+  const exitSel=()=>{setSelMode(false);clearSel();};
+  const bulkDelete=()=>{
+    if(!sel.size)return;
+    if(!window.confirm(`¿Borrar ${sel.size} clase(s) seleccionada(s)?`))return;
+    setSlots(ss=>{const n={...ss};sel.forEach(id=>delete n[id]);return n;});
+    exitSel();
+  };
+  const bulkConfirm=val=>{
+    if(!sel.size)return;
+    setSlots(ss=>{const n={...ss};sel.forEach(id=>{if(n[id])n[id]={...n[id],confirmed:val};});return n;});
+    clearSel();
+  };
 
   const exportSchedule=()=>{
     const profsToExport=vProf==='all'?professors:professors.filter(p=>p.id===vProf);
@@ -1498,7 +1515,31 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
           onMouseLeave={e=>{e.currentTarget.style.background='#fff';e.currentTarget.style.borderColor='#e2e8f0';}}>
           <Icon name="print" size={16}/>Exportar PDF
         </button>
+        {isAdmin&&(
+          <button onClick={()=>selMode?exitSel():setSelMode(true)}
+            style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',borderRadius:7,border:'1px solid',
+              background:selMode?'#fef2f2':'#fff',color:selMode?'#dc2626':'#475569',
+              borderColor:selMode?'#fecaca':'#e2e8f0',fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>
+            <Icon name={selMode?'close':'checklist'} size={16}/>{selMode?'Salir':'Seleccionar'}
+          </button>
+        )}
       </div>
+      {/* barra de acciones masivas */}
+      {selMode&&(
+        <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8,flexShrink:0,flexWrap:'wrap',
+          background:'#eff6ff',borderBottom:'1px solid #dbeafe',fontSize:13}}>
+          <span style={{fontWeight:700,color:'#1e3a8a'}}>{sel.size} seleccionada(s)</span>
+          {[{l:'🗑 Borrar',fn:bulkDelete,c:'#dc2626',bg:'#fef2f2',bc:'#fecaca'},
+            {l:'✅ Confirmar',fn:()=>bulkConfirm(true),c:'#0e6856',bg:'#f0fdf4',bc:'#bbf7d0'},
+            {l:'⏳ Pendiente',fn:()=>bulkConfirm(false),c:'#b45309',bg:'#fffbeb',bc:'#fde68a'},
+            {l:'Deseleccionar',fn:clearSel,c:'#475569',bg:'#fff',bc:'#e2e8f0'}].map(b=>(
+            <button key={b.l} onClick={b.fn} disabled={!sel.size}
+              style={{padding:'5px 11px',borderRadius:7,border:'1px solid '+b.bc,background:b.bg,color:b.c,
+                fontSize:12,fontWeight:600,cursor:sel.size?'pointer':'not-allowed',opacity:sel.size?1:.5}}>{b.l}</button>
+          ))}
+          <span style={{color:'#64748b',fontSize:12}}>Toca las clases para seleccionarlas.</span>
+        </div>
+      )}
       {/* leyenda */}
       <div style={{padding:'5px 16px',display:'flex',gap:16,fontSize:11,color:'#94a3b8',
         flexShrink:0,borderBottom:'1px solid #f1f5f9',background:'#fafbff'}}>
@@ -1574,9 +1615,13 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
                               const isMoto=stu?.vehicleType==='moto';
                               const dur=slot.duration||(stu?calcDuration(slot.profId,slot.date,slot.time,stu.vehicleType,slots):45);
                               return(
-                                <div key={slot.id} className="slot-card" onClick={()=>setEditing(slot)}
+                                <div key={slot.id} className="slot-card"
+                                  onClick={()=>selMode?toggleSel(slot.id):setEditing(slot)}
                                   style={{background:isPrac?'#1e3a8a':'#581c87',
-                                    borderLeft:`3px solid ${isPrac?'#93c5fd':'#c084fc'}`}}>
+                                    borderLeft:`3px solid ${isPrac?'#93c5fd':'#c084fc'}`,position:'relative',
+                                    outline:selMode&&sel.has(slot.id)?'2px solid #38bdf8':'none',
+                                    outlineOffset:1,opacity:selMode&&!sel.has(slot.id)?.55:1}}>
+                                  {selMode&&sel.has(slot.id)&&<div style={{position:'absolute',top:1,right:2,fontSize:10}}>✓</div>}
                                   <div style={{display:'flex',alignItems:'center',gap:3}}>
                                     <div style={{fontSize:10,fontWeight:600,color:'#f1f5f9',
                                       overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{stu?.name||'?'}</div>
