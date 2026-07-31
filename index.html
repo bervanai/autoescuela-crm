@@ -1122,7 +1122,7 @@ function StudentModal({
     profId: professors[0]?.id || '',
     license: 'B',
     vehicleType: 'manual',
-    fase: 'pista',
+    fase: 'circulacion',
     numClases: 0,
     bono: 'Bono 10',
     tasasPagadas: false,
@@ -1132,6 +1132,13 @@ function StudentModal({
     ...x,
     [k]: v
   }));
+  useEffect(() => {
+    const ph = licensePhases(f.license);
+    if (!ph.includes(f.fase)) setF(x => ({
+      ...x,
+      fase: ph[0]
+    }));
+  }, [f.license]);
   const vt = getVehicleType(f.vehicleType);
   return React.createElement(Modal, {
     title: student ? 'Editar alumno' : 'Nuevo alumno',
@@ -1159,45 +1166,56 @@ function StudentModal({
     value: p.id
   }, p.name)))), React.createElement(F, {
     label: "Fase de aprendizaje"
-  }, React.createElement("div", {
-    style: {
-      display: 'grid',
-      gridTemplateColumns: '1fr 1fr',
-      gap: 8
-    }
-  }, [{
-    id: 'pista',
-    label: 'Pista',
-    icon: 'fence',
-    color: '#b45309'
-  }, {
-    id: 'circulacion',
-    label: 'Circulación',
-    icon: 'directions_car',
-    color: '#0e6856'
-  }].map(fx => React.createElement("button", {
-    key: fx.id,
-    type: "button",
-    onClick: () => s('fase', fx.id),
-    style: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      padding: '8px 12px',
-      borderRadius: 8,
-      border: '2px solid',
-      cursor: 'pointer',
-      fontSize: 13,
-      fontWeight: 600,
-      transition: 'all .15s',
-      borderColor: f.fase === fx.id ? fx.color : '#e2e8f0',
-      background: f.fase === fx.id ? fx.color + '15' : '#fff',
-      color: f.fase === fx.id ? fx.color : '#64748b'
-    }
-  }, React.createElement(Icon, {
-    name: fx.icon,
-    size: 16
-  }), fx.label)))), React.createElement(F, {
+  }, (() => {
+    const FASES = [{
+      id: 'pista',
+      label: 'Pista',
+      icon: 'fence',
+      color: '#b45309'
+    }, {
+      id: 'circulacion',
+      label: 'Circulación',
+      icon: 'directions_car',
+      color: '#0e6856'
+    }];
+    const valid = licensePhases(f.license);
+    const shown = FASES.filter(fx => valid.includes(fx.id));
+    return React.createElement(React.Fragment, null, React.createElement("div", {
+      style: {
+        display: 'grid',
+        gridTemplateColumns: shown.length > 1 ? '1fr 1fr' : '1fr',
+        gap: 8
+      }
+    }, shown.map(fx => React.createElement("button", {
+      key: fx.id,
+      type: "button",
+      onClick: () => s('fase', fx.id),
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 12px',
+        borderRadius: 8,
+        border: '2px solid',
+        cursor: 'pointer',
+        fontSize: 13,
+        fontWeight: 600,
+        transition: 'all .15s',
+        borderColor: f.fase === fx.id ? fx.color : '#e2e8f0',
+        background: f.fase === fx.id ? fx.color + '15' : '#fff',
+        color: f.fase === fx.id ? fx.color : '#64748b'
+      }
+    }, React.createElement(Icon, {
+      name: fx.icon,
+      size: 16
+    }), fx.label))), valid.length === 1 && React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: '#94a3b8',
+        marginTop: 6
+      }
+    }, "El carnet ", React.createElement("b", null, f.license), " se examina ", licenseExamLabel(f.license), " (DGT)."));
+  })()), React.createElement(F, {
     label: "Tipo de vehículo (afecta duración de clase)"
   }, React.createElement("div", {
     style: {
@@ -1256,8 +1274,9 @@ function StudentModal({
     className: inp,
     value: f.license,
     onChange: e => s('license', e.target.value)
-  }, ['A', 'A1', 'A2', 'B', 'C', 'D'].map(l => React.createElement("option", {
-    key: l
+  }, LICENSE_OPTIONS.map(l => React.createElement("option", {
+    key: l,
+    value: l
   }, l)))), React.createElement(F, {
     label: "Nº Clases realizadas"
   }, React.createElement("input", {
@@ -1265,7 +1284,13 @@ function StudentModal({
     className: inp,
     value: f.numClases,
     onChange: e => s('numClases', +e.target.value)
-  }))), React.createElement("div", {
+  }))), React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      margin: '-4px 0 8px'
+    }
+  }, "🚗 ", LICENSE_EXAMS[f.license]?.veh, " · exámenes DGT: ", licenseExamLabel(f.license)), React.createElement("div", {
     className: "form-2col",
     style: {
       display: 'grid',
@@ -1937,11 +1962,108 @@ function Alumnos({
   }), "Eliminar"))));
 }
 const PROF_COLORS = ['#1e3a5f', '#7c2d8c', '#0e6856', '#b45309', '#9f1239', '#1d4ed8', '#065f46', '#7c3aed'];
-const LICENSE_OPTIONS = ['AM', 'A1', 'A2', 'A', 'B', 'BE', 'C', 'CE', 'D'];
+const LICENSE_EXAMS = {
+  AM: {
+    pista: true,
+    circ: false,
+    veh: 'Ciclomotor (50cc · 45 km/h)'
+  },
+  A1: {
+    pista: true,
+    circ: true,
+    veh: 'Moto hasta 125cc / 11 kW'
+  },
+  A2: {
+    pista: true,
+    circ: true,
+    veh: 'Moto hasta 35 kW'
+  },
+  A: {
+    pista: true,
+    circ: true,
+    veh: 'Moto sin límite'
+  },
+  B: {
+    pista: false,
+    circ: true,
+    veh: 'Turismo hasta 3.500 kg'
+  },
+  BE: {
+    pista: true,
+    circ: true,
+    veh: 'B + remolque no ligero'
+  },
+  C1: {
+    pista: true,
+    circ: true,
+    veh: 'Camión 3.500–7.500 kg'
+  },
+  C1E: {
+    pista: true,
+    circ: true,
+    veh: 'C1 + remolque no ligero'
+  },
+  C: {
+    pista: true,
+    circ: true,
+    veh: 'Camión > 3.500 kg'
+  },
+  CE: {
+    pista: true,
+    circ: true,
+    veh: 'C + remolque no ligero'
+  },
+  D1: {
+    pista: true,
+    circ: true,
+    veh: 'Autobús hasta 16 plazas'
+  },
+  D1E: {
+    pista: true,
+    circ: true,
+    veh: 'D1 + remolque no ligero'
+  },
+  D: {
+    pista: true,
+    circ: true,
+    veh: 'Autobús > 16 plazas'
+  },
+  DE: {
+    pista: true,
+    circ: true,
+    veh: 'D + remolque no ligero'
+  }
+};
+const LICENSE_OPTIONS = Object.keys(LICENSE_EXAMS);
+function licensePhases(lic) {
+  const e = LICENSE_EXAMS[lic] || LICENSE_EXAMS.B;
+  const ph = [];
+  if (e.pista) ph.push('pista');
+  if (e.circ) ph.push('circulacion');
+  return ph.length ? ph : ['circulacion'];
+}
+function defaultPhase(lic) {
+  return licensePhases(lic)[0];
+}
+function licenseExamLabel(lic) {
+  const ph = licensePhases(lic);
+  if (ph.length === 2) return 'pista + circulación (primero pista)';
+  return ph[0] === 'pista' ? 'solo pista' : 'solo circulación';
+}
 function deriveClassMode(licenses) {
   const ls = (licenses || []).filter(Boolean);
-  if (ls.length && ls.every(l => l === 'B')) return 'circulacion';
-  return 'ambos';
+  if (!ls.length) return 'ambos';
+  let pista = false,
+    circ = false;
+  ls.forEach(l => {
+    const e = LICENSE_EXAMS[l];
+    if (e) {
+      pista = pista || e.pista;
+      circ = circ || e.circ;
+    }
+  });
+  if (pista && circ) return 'ambos';
+  return pista ? 'pista' : 'circulacion';
 }
 const CLASS_MODE_LABEL = {
   circulacion: 'Solo circulación',

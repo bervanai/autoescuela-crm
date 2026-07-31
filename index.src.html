@@ -581,8 +581,14 @@ function calcDuration(profId, date, time, studentVehicleType, allSlots){
 
 function StudentModal({student,professors,onSave,onClose}){
   const [f,setF]=useState(student||{name:'',phone:'',profId:professors[0]?.id||'',
-    license:'B',vehicleType:'manual',fase:'pista',numClases:0,bono:'Bono 10',tasasPagadas:false,active:true});
+    license:'B',vehicleType:'manual',fase:'circulacion',numClases:0,bono:'Bono 10',tasasPagadas:false,active:true});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
+  // La fase debe ser siempre válida para el carnet (un carnet B no puede estar
+  // en pista). Si el carnet cambia y la fase deja de ser válida, se corrige.
+  useEffect(()=>{
+    const ph=licensePhases(f.license);
+    if(!ph.includes(f.fase))setF(x=>({...x,fase:ph[0]}));
+  },[f.license]);
   const vt=getVehicleType(f.vehicleType);
   return(
     <Modal title={student?'Editar alumno':'Nuevo alumno'} onClose={onClose}>
@@ -593,21 +599,30 @@ function StudentModal({student,professors,onSave,onClose}){
           {professors.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </F>
-      {/* Fase: Pista o Circulación */}
+      {/* Fase: solo las válidas para el carnet (B → solo circulación) */}
       <F label="Fase de aprendizaje">
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-          {[{id:'pista',label:'Pista',icon:'fence',color:'#b45309'},
-            {id:'circulacion',label:'Circulación',icon:'directions_car',color:'#0e6856'}].map(fx=>(
-            <button key={fx.id} type="button" onClick={()=>s('fase',fx.id)}
-              style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,
-                border:'2px solid',cursor:'pointer',fontSize:13,fontWeight:600,transition:'all .15s',
-                borderColor:f.fase===fx.id?fx.color:'#e2e8f0',
-                background:f.fase===fx.id?fx.color+'15':'#fff',
-                color:f.fase===fx.id?fx.color:'#64748b'}}>
-              <Icon name={fx.icon} size={16}/>{fx.label}
-            </button>
-          ))}
-        </div>
+        {(()=>{
+          const FASES=[{id:'pista',label:'Pista',icon:'fence',color:'#b45309'},
+                       {id:'circulacion',label:'Circulación',icon:'directions_car',color:'#0e6856'}];
+          const valid=licensePhases(f.license);
+          const shown=FASES.filter(fx=>valid.includes(fx.id));
+          return(<React.Fragment>
+            <div style={{display:'grid',gridTemplateColumns:shown.length>1?'1fr 1fr':'1fr',gap:8}}>
+              {shown.map(fx=>(
+                <button key={fx.id} type="button" onClick={()=>s('fase',fx.id)}
+                  style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,
+                    border:'2px solid',cursor:'pointer',fontSize:13,fontWeight:600,transition:'all .15s',
+                    borderColor:f.fase===fx.id?fx.color:'#e2e8f0',
+                    background:f.fase===fx.id?fx.color+'15':'#fff',
+                    color:f.fase===fx.id?fx.color:'#64748b'}}>
+                  <Icon name={fx.icon} size={16}/>{fx.label}
+                </button>
+              ))}
+            </div>
+            {valid.length===1&&<p style={{fontSize:11,color:'#94a3b8',marginTop:6}}>
+              El carnet <b>{f.license}</b> se examina {licenseExamLabel(f.license)} (DGT).</p>}
+          </React.Fragment>);
+        })()}
       </F>
       {/* Tipo de vehículo */}
       <F label="Tipo de vehículo (afecta duración de clase)">
@@ -631,11 +646,14 @@ function StudentModal({student,professors,onSave,onClose}){
       <div className="form-2col" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <F label="Carnet">
           <select className={inp} value={f.license} onChange={e=>s('license',e.target.value)}>
-            {['A','A1','A2','B','C','D'].map(l=><option key={l}>{l}</option>)}
+            {LICENSE_OPTIONS.map(l=><option key={l} value={l}>{l}</option>)}
           </select>
         </F>
         <F label="Nº Clases realizadas"><input type="number" className={inp} value={f.numClases} onChange={e=>s('numClases',+e.target.value)}/></F>
       </div>
+      <p style={{fontSize:11,color:'#94a3b8',margin:'-4px 0 8px'}}>
+        🚗 {LICENSE_EXAMS[f.license]?.veh} · exámenes DGT: {licenseExamLabel(f.license)}
+      </p>
       <div className="form-2col" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <F label="Bono">
           <select className={inp} value={f.bono} onChange={e=>s('bono',e.target.value)}>
@@ -939,13 +957,50 @@ function Alumnos({students,setStudents,professors,user}){
 // ─── PROFESORES ───────────────────────────────────────────────────────────────
 const PROF_COLORS=['#1e3a5f','#7c2d8c','#0e6856','#b45309','#9f1239','#1d4ed8','#065f46','#7c3aed'];
 // Permisos que puede impartir un profesor
-const LICENSE_OPTIONS=['AM','A1','A2','A','B','BE','C','CE','D'];
-// Regla del negocio: si solo imparte carnet B → solo circulación; cualquier
-// otro permiso (moto, camión, etc.) → pista y circulación.
+// Clasificación DGT de cada carnet según sus exámenes prácticos (tabla oficial
+// de la autoescuela): qué pruebas requiere — circuito cerrado (pista) y/o
+// circulación. Es la fuente de verdad para las fases de cada alumno.
+const LICENSE_EXAMS={
+  AM: {pista:true,  circ:false, veh:'Ciclomotor (50cc · 45 km/h)'},
+  A1: {pista:true,  circ:true,  veh:'Moto hasta 125cc / 11 kW'},
+  A2: {pista:true,  circ:true,  veh:'Moto hasta 35 kW'},
+  A:  {pista:true,  circ:true,  veh:'Moto sin límite'},
+  B:  {pista:false, circ:true,  veh:'Turismo hasta 3.500 kg'},
+  BE: {pista:true,  circ:true,  veh:'B + remolque no ligero'},
+  C1: {pista:true,  circ:true,  veh:'Camión 3.500–7.500 kg'},
+  C1E:{pista:true,  circ:true,  veh:'C1 + remolque no ligero'},
+  C:  {pista:true,  circ:true,  veh:'Camión > 3.500 kg'},
+  CE: {pista:true,  circ:true,  veh:'C + remolque no ligero'},
+  D1: {pista:true,  circ:true,  veh:'Autobús hasta 16 plazas'},
+  D1E:{pista:true,  circ:true,  veh:'D1 + remolque no ligero'},
+  D:  {pista:true,  circ:true,  veh:'Autobús > 16 plazas'},
+  DE: {pista:true,  circ:true,  veh:'D + remolque no ligero'},
+};
+const LICENSE_OPTIONS=Object.keys(LICENSE_EXAMS);
+// Fases válidas de un carnet, en orden (primero pista cuando aplica).
+// El carnet B NO tiene examen de pista → solo circulación.
+function licensePhases(lic){
+  const e=LICENSE_EXAMS[lic]||LICENSE_EXAMS.B;
+  const ph=[];
+  if(e.pista)ph.push('pista');
+  if(e.circ)ph.push('circulacion');
+  return ph.length?ph:['circulacion'];
+}
+function defaultPhase(lic){return licensePhases(lic)[0];}      // fase recomendada
+function licenseExamLabel(lic){
+  const ph=licensePhases(lic);
+  if(ph.length===2)return 'pista + circulación (primero pista)';
+  return ph[0]==='pista'?'solo pista':'solo circulación';
+}
+// Modo de clase de un profesor según los carnets que imparte (unión de fases).
+// Solo B → circulación · solo AM → pista · con más carnets → ambos.
 function deriveClassMode(licenses){
   const ls=(licenses||[]).filter(Boolean);
-  if(ls.length&&ls.every(l=>l==='B'))return 'circulacion';
-  return 'ambos';
+  if(!ls.length)return 'ambos';
+  let pista=false, circ=false;
+  ls.forEach(l=>{const e=LICENSE_EXAMS[l]; if(e){pista=pista||e.pista; circ=circ||e.circ;}});
+  if(pista&&circ)return 'ambos';
+  return pista?'pista':'circulacion';
 }
 const CLASS_MODE_LABEL={circulacion:'Solo circulación',pista:'Solo pista',ambos:'Pista y circulación'};
 const CLASS_MODE_COLOR={circulacion:'#0e6856',pista:'#b45309',ambos:'#1d4ed8'};
