@@ -1099,6 +1099,15 @@ const VEHICLE_TYPES = [{
 function getVehicleType(id) {
   return VEHICLE_TYPES.find(v => v.id === id) || VEHICLE_TYPES[0];
 }
+const hhmmToMin = t => {
+  const [h, m] = String(t).substring(0, 5).split(':').map(Number);
+  return h * 60 + (m || 0);
+};
+const rangesOverlap = (a, ad, b, bd) => a < b + bd && b < a + ad;
+function wouldClash(slotsObj, exceptId, profId, date, time, dur) {
+  const a = hhmmToMin(time);
+  return Object.values(slotsObj).some(o => o.id !== exceptId && o.profId === profId && o.date === date && o.studentId && !o.cancelled && rangesOverlap(a, dur, hhmmToMin(o.time), o.duration || 45));
+}
 function calcDuration(profId, date, time, studentVehicleType, allSlots) {
   const slotsArr = Array.isArray(allSlots) ? allSlots : Object.values(allSlots || {});
   const [h, m] = time.split(':').map(Number);
@@ -3111,6 +3120,39 @@ function Horario({
     });
     setEditing(null);
   };
+  const moveSlot = (slotId, date, time, profId) => {
+    setSlots(ss => {
+      const sl = ss[slotId];
+      if (!sl) return ss;
+      if (sl.date === date && sl.time === time && sl.profId === profId) return ss;
+      if (wouldClash(ss, slotId, profId, date, time, sl.duration || 45)) {
+        alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');
+        return ss;
+      }
+      const n = {
+        ...ss
+      };
+      if (sl.fromBot) {
+        n[slotId] = {
+          ...sl,
+          date,
+          time,
+          profId
+        };
+      } else {
+        delete n[slotId];
+        const nid = `slot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        n[nid] = {
+          ...sl,
+          id: nid,
+          date,
+          time,
+          profId
+        };
+      }
+      return n;
+    });
+  };
   const [selMode, setSelMode] = useState(false);
   const [sel, setSel] = useState(() => new Set());
   const toggleSel = id => setSel(s => {
@@ -3481,7 +3523,17 @@ function Horario({
   }, React.createElement(Icon, {
     name: "touch_app",
     size: 12
-  }), "Clic en cabecera del día para reservar día de examen")), React.createElement("div", {
+  }), "Clic en cabecera del día para reservar día de examen"), isAdmin && React.createElement("span", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 4,
+      color: '#1d4ed8'
+    }
+  }, React.createElement(Icon, {
+    name: "drag_indicator",
+    size: 12
+  }), "Arrastra una clase para moverla de hora/día/profesor")), React.createElement("div", {
     style: {
       overflow: 'auto',
       flex: 1,
@@ -3576,6 +3628,15 @@ function Horario({
           padding: 2,
           verticalAlign: 'top',
           width: 90
+        },
+        onDragOver: e => {
+          if (isAdmin && !isExam && !selMode) e.preventDefault();
+        },
+        onDrop: e => {
+          if (!isAdmin || selMode || isExam) return;
+          e.preventDefault();
+          const id = e.dataTransfer.getData('text/plain');
+          if (id) moveSlot(id, ds, time, prof.id);
         }
       }, isExam ? React.createElement("div", {
         style: {
@@ -3602,6 +3663,11 @@ function Horario({
         return React.createElement("div", {
           key: slot.id,
           className: "slot-card",
+          draggable: isAdmin && !selMode,
+          onDragStart: e => {
+            e.dataTransfer.setData('text/plain', slot.id);
+            e.dataTransfer.effectAllowed = 'move';
+          },
           onClick: () => selMode ? toggleSel(slot.id) : setEditing(slot),
           style: {
             background: isPrac ? '#1e3a8a' : '#581c87',
