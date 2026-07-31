@@ -405,6 +405,7 @@ function normalizeStudent(row) {
     examDate:    row.exam_date,
     examResult:  row.exam_result,
     fase:        row.fase,
+    license:     row.license,
     // campos JSON legacy (por si acaso)
     ...(row.profId      !== undefined ? { profId:    row.profId }    : {}),
     ...(row.botActive   !== undefined ? { botActive: row.botActive } : {}),
@@ -943,7 +944,14 @@ function dayMenuMessage(day, prefix = '') {
 }
 
 // Filtro de horas de pista para un alumno según su fase
+// Carnets que NO tienen examen de pista (según la tabla DGT de la autoescuela):
+// su fase siempre es circulación, nunca se limita a horas de pista.
+const CARNETS_SIN_PISTA = new Set(['B']);
+
 async function pistaFilterFor(st) {
+  // Un carnet sin examen de pista (p.ej. B) nunca se restringe a horas de pista,
+  // aunque en los datos figure "pista" por error. Evita desfases con el carnet.
+  if (st.license && CARNETS_SIN_PISTA.has(st.license)) return null;
   if ((st.fase || 'pista') !== 'pista') return null; // circulación: sin límite
   return await loadPistaHours();                      // pista: solo horas de pista
 }
