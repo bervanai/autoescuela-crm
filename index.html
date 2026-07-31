@@ -2088,7 +2088,7 @@ function ProfModal({
     email: '',
     licenses: [],
     classMode: '',
-    vehicleId: '',
+    vehicleIds: [],
     schedule: ''
   };
   const [f, setF] = useState(prof ? {
@@ -2098,7 +2098,7 @@ function ProfModal({
     email: prof.email || '',
     licenses: prof.licenses || [],
     classMode: prof.classMode || prof.class_mode || '',
-    vehicleId: prof.vehicleId || prof.vehicle_id || '',
+    vehicleIds: prof.vehicleIds && prof.vehicleIds.length ? prof.vehicleIds : prof.vehicleId || prof.vehicle_id ? [prof.vehicleId || prof.vehicle_id] : [],
     schedule: prof.schedule || ''
   } : blank);
   const s = (k, v) => setF(x => ({
@@ -2205,17 +2205,49 @@ function ProfModal({
       gap: 12
     }
   }, React.createElement(F, {
-    label: "Coche asignado"
-  }, React.createElement("select", {
-    className: inp,
-    value: f.vehicleId,
-    onChange: e => s('vehicleId', e.target.value)
-  }, React.createElement("option", {
-    value: ""
-  }, "— Sin asignar —"), vehicles.map(v => React.createElement("option", {
-    key: v.id,
-    value: v.id
-  }, v.name, v.plate ? ` · ${v.plate}` : '')))), React.createElement(F, {
+    label: "Vehículos asignados"
+  }, vehicles.length === 0 ? React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: '#94a3b8'
+    }
+  }, "No hay vehículos. Créalos en la pestaña Vehículos.") : React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap'
+    }
+  }, vehicles.map(v => {
+    const on = (f.vehicleIds || []).includes(v.id);
+    return React.createElement("button", {
+      key: v.id,
+      type: "button",
+      onClick: () => setF(x => {
+        const has = (x.vehicleIds || []).includes(v.id);
+        return {
+          ...x,
+          vehicleIds: has ? x.vehicleIds.filter(y => y !== v.id) : [...(x.vehicleIds || []), v.id]
+        };
+      }),
+      style: {
+        padding: '5px 10px',
+        borderRadius: 16,
+        border: '2px solid',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 600,
+        borderColor: on ? '#1d4ed8' : '#e2e8f0',
+        background: on ? '#1d4ed815' : '#fff',
+        color: on ? '#1d4ed8' : '#64748b'
+      }
+    }, v.name, v.plate ? ` · ${v.plate}` : '');
+  })), React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 6
+    }
+  }, "Marca todos los coches que usa (uno por cada tipo de permiso que imparte).")), React.createElement(F, {
     label: "Horario aprox."
   }, React.createElement("input", {
     className: inp,
@@ -2495,21 +2527,23 @@ function Profesores({
         label: CLASS_MODE_LABEL[mode] || 'Pista y circulación',
         color: CLASS_MODE_COLOR[mode] || '#1d4ed8'
       }));
-    })(), (prof.vehicleId || prof.vehicle_id) && (() => {
-      const veh = vehicles.find(v => v.id === (prof.vehicleId || prof.vehicle_id));
-      return veh ? React.createElement("div", {
+    })(), (() => {
+      const ids = prof.vehicleIds && prof.vehicleIds.length ? prof.vehicleIds : prof.vehicleId || prof.vehicle_id ? [prof.vehicleId || prof.vehicle_id] : [];
+      const vehs = ids.map(id => vehicles.find(v => v.id === id)).filter(Boolean);
+      return vehs.length ? React.createElement("div", {
         style: {
           fontSize: 12,
           color: '#64748b',
           marginBottom: 6,
           display: 'flex',
           alignItems: 'center',
-          gap: 4
+          gap: 4,
+          flexWrap: 'wrap'
         }
       }, React.createElement(Icon, {
         name: "directions_car",
         size: 13
-      }), veh.name, veh.plate ? ` · ${veh.plate}` : '') : null;
+      }), vehs.map(v => v.name + (v.plate ? ` · ${v.plate}` : '')).join('  ·  ')) : null;
     })(), prof.schedule && React.createElement("div", {
       style: {
         fontSize: 12,
@@ -6251,18 +6285,22 @@ function App() {
     const slotsArr = Object.values(load('crm_slots_v4', slots) || {});
     const profsArr = load('crm_professors_v3', professors) || [];
     const vehiclesArr = load('crm_vehicles_v3', vehicles) || [];
-    const normProf = p => ({
-      id: p.id,
-      name: p.name,
-      color: p.color || '#1e3a5f',
-      phone: p.phone || null,
-      email: p.email || null,
-      active: p.active !== false,
-      licenses: p.licenses || [],
-      class_mode: p.classMode || p.class_mode || deriveClassMode(p.licenses),
-      vehicle_id: p.vehicleId || p.vehicle_id || null,
-      schedule: p.schedule || null
-    });
+    const normProf = p => {
+      const vids = p.vehicleIds && p.vehicleIds.length ? p.vehicleIds : p.vehicleId || p.vehicle_id ? [p.vehicleId || p.vehicle_id] : [];
+      return {
+        id: p.id,
+        name: p.name,
+        color: p.color || '#1e3a5f',
+        phone: p.phone || null,
+        email: p.email || null,
+        active: p.active !== false,
+        licenses: p.licenses || [],
+        class_mode: p.classMode || p.class_mode || deriveClassMode(p.licenses),
+        vehicle_id: vids[0] || null,
+        vehicle_ids: vids,
+        schedule: p.schedule || null
+      };
+    };
     const normStu = s => ({
       id: s.id,
       name: s.name,
@@ -6314,18 +6352,22 @@ function App() {
     const sb = getSupabase();
     const token = sessionStorage.getItem('crm_token');
     if (!sb || !token) return;
-    const normProf = p => ({
-      id: p.id,
-      name: p.name,
-      color: p.color || '#1e3a5f',
-      phone: p.phone || null,
-      email: p.email || null,
-      active: p.active !== false,
-      licenses: p.licenses || [],
-      class_mode: p.classMode || p.class_mode || deriveClassMode(p.licenses),
-      vehicle_id: p.vehicleId || p.vehicle_id || null,
-      schedule: p.schedule || null
-    });
+    const normProf = p => {
+      const vids = p.vehicleIds && p.vehicleIds.length ? p.vehicleIds : p.vehicleId || p.vehicle_id ? [p.vehicleId || p.vehicle_id] : [];
+      return {
+        id: p.id,
+        name: p.name,
+        color: p.color || '#1e3a5f',
+        phone: p.phone || null,
+        email: p.email || null,
+        active: p.active !== false,
+        licenses: p.licenses || [],
+        class_mode: p.classMode || p.class_mode || deriveClassMode(p.licenses),
+        vehicle_id: vids[0] || null,
+        vehicle_ids: vids,
+        schedule: p.schedule || null
+      };
+    };
     const normStu = s => ({
       id: s.id,
       name: s.name,
@@ -6422,6 +6464,7 @@ function App() {
       licenses: p.licenses || [],
       classMode: p.class_mode || deriveClassMode(p.licenses),
       vehicleId: p.vehicle_id || '',
+      vehicleIds: p.vehicle_ids || (p.vehicle_id ? [p.vehicle_id] : []),
       schedule: p.schedule || ''
     })));
     setStudents((d.students || []).map(s => ({

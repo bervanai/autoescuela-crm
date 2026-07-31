@@ -1005,10 +1005,11 @@ function deriveClassMode(licenses){
 const CLASS_MODE_LABEL={circulacion:'Solo circulación',pista:'Solo pista',ambos:'Pista y circulación'};
 const CLASS_MODE_COLOR={circulacion:'#0e6856',pista:'#b45309',ambos:'#1d4ed8'};
 function ProfModal({prof,vehicles=[],onSave,onClose}){
-  const blank={name:'',color:PROF_COLORS[0],phone:'',email:'',licenses:[],classMode:'',vehicleId:'',schedule:''};
+  const blank={name:'',color:PROF_COLORS[0],phone:'',email:'',licenses:[],classMode:'',vehicleIds:[],schedule:''};
   const [f,setF]=useState(prof?{name:prof.name,color:prof.color,phone:prof.phone||'',email:prof.email||'',
     licenses:prof.licenses||[],classMode:prof.classMode||prof.class_mode||'',
-    vehicleId:prof.vehicleId||prof.vehicle_id||'',schedule:prof.schedule||''}:blank);
+    vehicleIds:(prof.vehicleIds&&prof.vehicleIds.length)?prof.vehicleIds:((prof.vehicleId||prof.vehicle_id)?[prof.vehicleId||prof.vehicle_id]:[]),
+    schedule:prof.schedule||''}:blank);
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
   // Tipo de clase efectivo: manual si se ha fijado, si no derivado de los permisos
   const effMode=f.classMode||deriveClassMode(f.licenses);
@@ -1053,11 +1054,22 @@ function ProfModal({prof,vehicles=[],onSave,onClose}){
         </div>
       </F>
       <div className="form-2col" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-        <F label="Coche asignado">
-          <select className={inp} value={f.vehicleId} onChange={e=>s('vehicleId',e.target.value)}>
-            <option value="">— Sin asignar —</option>
-            {vehicles.map(v=><option key={v.id} value={v.id}>{v.name}{v.plate?` · ${v.plate}`:''}</option>)}
-          </select>
+        <F label="Vehículos asignados">
+          {vehicles.length===0
+            ? <p style={{fontSize:12,color:'#94a3b8'}}>No hay vehículos. Créalos en la pestaña Vehículos.</p>
+            : <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {vehicles.map(v=>{
+                  const on=(f.vehicleIds||[]).includes(v.id);
+                  return(<button key={v.id} type="button"
+                    onClick={()=>setF(x=>{const has=(x.vehicleIds||[]).includes(v.id);
+                      return{...x,vehicleIds:has?x.vehicleIds.filter(y=>y!==v.id):[...(x.vehicleIds||[]),v.id]};})}
+                    style={{padding:'5px 10px',borderRadius:16,border:'2px solid',cursor:'pointer',fontSize:12,fontWeight:600,
+                      borderColor:on?'#1d4ed8':'#e2e8f0',background:on?'#1d4ed815':'#fff',color:on?'#1d4ed8':'#64748b'}}>
+                    {v.name}{v.plate?` · ${v.plate}`:''}
+                  </button>);
+                })}
+              </div>}
+          <p style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Marca todos los coches que usa (uno por cada tipo de permiso que imparte).</p>
         </F>
         <F label="Horario aprox."><input className={inp} value={f.schedule} onChange={e=>s('schedule',e.target.value)} placeholder="09:00 a 14:00 y 16:00 a 20:00"/></F>
       </div>
@@ -1165,11 +1177,15 @@ function Profesores({professors,setProfessors,students,vehicles=[],user}){
                   <Badge label={CLASS_MODE_LABEL[mode]||'Pista y circulación'} color={CLASS_MODE_COLOR[mode]||'#1d4ed8'}/>
                 </div>
               );})()}
-              {(prof.vehicleId||prof.vehicle_id)&&(()=>{const veh=vehicles.find(v=>v.id===(prof.vehicleId||prof.vehicle_id));return veh?(
-                <div style={{fontSize:12,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:4}}>
-                  <Icon name="directions_car" size={13}/>{veh.name}{veh.plate?` · ${veh.plate}`:''}
-                </div>
-              ):null;})()}
+              {(()=>{
+                const ids=(prof.vehicleIds&&prof.vehicleIds.length)?prof.vehicleIds:((prof.vehicleId||prof.vehicle_id)?[prof.vehicleId||prof.vehicle_id]:[]);
+                const vehs=ids.map(id=>vehicles.find(v=>v.id===id)).filter(Boolean);
+                return vehs.length?(
+                  <div style={{fontSize:12,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
+                    <Icon name="directions_car" size={13}/>{vehs.map(v=>v.name+(v.plate?` · ${v.plate}`:'')).join('  ·  ')}
+                  </div>
+                ):null;
+              })()}
               {prof.schedule&&<div style={{fontSize:12,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:4}}>
                 <Icon name="schedule" size={13}/>{prof.schedule}
               </div>}
@@ -2928,14 +2944,18 @@ function App(){
     const slotsArr=Object.values(load('crm_slots_v4',slots)||{});
     const profsArr=load('crm_professors_v3',professors)||[];
     const vehiclesArr=load('crm_vehicles_v3',vehicles)||[];
-    const normProf=p=>({
-      id:p.id,name:p.name,color:p.color||'#1e3a5f',
-      phone:p.phone||null,email:p.email||null,active:p.active!==false,
-      licenses:p.licenses||[],
-      class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),
-      vehicle_id:p.vehicleId||p.vehicle_id||null,
-      schedule:p.schedule||null,
-    });
+    const normProf=p=>{
+      const vids=(p.vehicleIds&&p.vehicleIds.length)?p.vehicleIds:((p.vehicleId||p.vehicle_id)?[p.vehicleId||p.vehicle_id]:[]);
+      return {
+        id:p.id,name:p.name,color:p.color||'#1e3a5f',
+        phone:p.phone||null,email:p.email||null,active:p.active!==false,
+        licenses:p.licenses||[],
+        class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),
+        vehicle_id:vids[0]||null,        // primer coche (compatibilidad)
+        vehicle_ids:vids,
+        schedule:p.schedule||null,
+      };
+    };
     const normStu=s=>({
       id:s.id,name:s.name,phone:s.phone||null,
       prof_id:s.profId||s.prof_id||null,
@@ -2986,7 +3006,7 @@ function App(){
     // Una clase apunta a su alumno y su profesor: deben existir en la nube
     // ANTES de guardar la clase. Si no, la base de datos la rechaza en
     // silencio y al recargar desaparece. Por eso esto va PRIMERO.
-    const normProf=p=>({id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false,licenses:p.licenses||[],class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),vehicle_id:p.vehicleId||p.vehicle_id||null,schedule:p.schedule||null});
+    const normProf=p=>{const vids=(p.vehicleIds&&p.vehicleIds.length)?p.vehicleIds:((p.vehicleId||p.vehicle_id)?[p.vehicleId||p.vehicle_id]:[]);return {id:p.id,name:p.name,color:p.color||'#1e3a5f',phone:p.phone||null,email:p.email||null,active:p.active!==false,licenses:p.licenses||[],class_mode:p.classMode||p.class_mode||deriveClassMode(p.licenses),vehicle_id:vids[0]||null,vehicle_ids:vids,schedule:p.schedule||null};};
     const normStu=s=>({id:s.id,name:s.name,phone:s.phone||null,prof_id:s.profId||s.prof_id||null,license:s.license||'B',vehicle_type:s.vehicleType||s.vehicle_type||'manual',num_clases:s.numClases??s.num_clases??0,bono:s.bono||null,tasas_pagadas:!!s.tasasPagadas,active:s.active!==false,bot_active:s.botActive!==false,exam_date:s.examDate||s.exam_date||null,exam_result:s.examResult||s.exam_result||null,fase:s.fase||'pista',notes:s.notes||null});
     const normVeh=v=>({id:v.id,name:v.name,plate:v.plate||'',type:v.type||'B'});
     const {error:eData}=await sb.rpc('crm_save_data',{
@@ -3047,7 +3067,9 @@ function App(){
       avatar:(p.name||'?').slice(0,2).toUpperCase(),active:p.active!==false,
       licenses:p.licenses||[],
       classMode:p.class_mode||deriveClassMode(p.licenses),
-      vehicleId:p.vehicle_id||'',schedule:p.schedule||'',
+      vehicleId:p.vehicle_id||'',
+      vehicleIds:p.vehicle_ids||(p.vehicle_id?[p.vehicle_id]:[]),
+      schedule:p.schedule||'',
     })));
     setStudents((d.students||[]).map(s=>({
       id:s.id,name:s.name,phone:s.phone||'',profId:s.prof_id,
