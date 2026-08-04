@@ -581,6 +581,7 @@ function dateForDow(dow) {
 // Duración estándar de una clase práctica (minutos). Fuente única de verdad.
 const SLOT_MIN = 45;
 function toMin(t){ const [h,m] = String(t).substring(0,5).split(':').map(Number); return h*60+(m||0); }
+function addMinutes(hhmm, mins){ const t = toMin(hhmm) + mins; return `${String(Math.floor(t/60)).padStart(2,'0')}:${String(t%60).padStart(2,'0')}`; }
 function rangesOverlap(aStart, aDur, bStart, bDur){ return aStart < bStart+bDur && bStart < aStart+aDur; }
 // ¿Existe ya una clase que SE SOLAPE con [time, time+dur) para ese profe/día?
 // Clave para que clases de 45 min no se pisen (evita el "desfase" de horas).
@@ -1274,6 +1275,38 @@ app.post('/bot', async (req, res) => {
         `Estas son tus clases${delDia.length ? ' de ese día' : ''}:\n\n` +
         lista.map((s, i) => `*${i + 1}.* ${slotLabel(s)}`).join('\n') +
         `\n\n¿Cuál quieres cancelar? Responde con el número, o *listo* para salir.`);
+      done(); return;
+    }
+  }
+
+  // ── Clase DOBLE: el alumno quiere 90 min = dos clases seguidas de 45 ──
+  // Reconoce "doble", "dos horas", etc. Añade la media hora siguiente a su
+  // última clase (o a su próxima clase) si está libre.
+  if (/(clase doble|\bdoble\b|dos horas|2 horas|90 ?min|hora y media)/.test(norm(body))) {
+    const stD = (await loadStudents()).find(s => s.phone === from && s.active);
+    if (stD) {
+      const profIdD = stD.profId ?? stD.prof_id;
+      let base = (state && Array.isArray(state.booked) && state.booked.length) ? state.booked[state.booked.length - 1] : null;
+      if (!base) { const up = await upcomingSlotsFor(stD.id, 1); base = up[0] || null; }
+      if (!base) {
+        await sendWA(from, `Para una clase *doble* primero reserva una hora y luego dime *doble*. Escríbeme *hola* y lo vemos. 🚗`);
+        done(); return;
+      }
+      const t1 = String(base.time).substring(0, 5);
+      const t2 = addMinutes(t1, SLOT_MIN);                       // media hora siguiente
+      if (await isSlotFree(profIdD, base.date, t2)) {
+        const saved = await bookSlot(stD.id, stD.name, profIdD, { date: base.date, time: t2, dayName: base.dayName });
+        if (saved) {
+          const resumen = await listaClasesAlumno(stD.id);
+          await sendWA(from,
+            `✅ ¡Hecho! Clase *doble* (90 min): *${base.dayName || formatDate(base.date)} de ${t1} a ${addMinutes(t2, SLOT_MIN)}*.\n\n` +
+            `📋 *Tus clases:*\n${resumen}`);
+          done(); return;
+        }
+      }
+      await sendWA(from,
+        `Para doblar la clase necesito la media hora siguiente (${t2}) libre, y ahora está ocupada o fuera de horario. 😕\n` +
+        `Dime otra hora y te reservo *dos seguidas*. 🚗`);
       done(); return;
     }
   }
