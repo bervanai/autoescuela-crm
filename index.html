@@ -170,6 +170,7 @@ const mkGrid = (startH, endMin, step) => {
   return a;
 };
 const TIME_SLOTS = mkGrid(7, 21 * 60 + 45, 15);
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const NAMES_INAKI = ['Ana García', 'Luis Martín', 'Carmen López', 'Javier Pérez', 'María Sánchez', 'Pedro Ruiz', 'Laura Torres', 'Sofía Moreno', 'Miguel Díaz', 'Elena Castro'];
 const NAMES_CARLOS = ['Roberto Jiménez', 'Natalia Romero', 'Sergio Navarro', 'Paula Ortiz', 'Diego Herrera', 'Alicia Flores', 'Raúl Gómez', 'Marta Ramos', 'Antonio Molina', 'Cristina Reyes'];
@@ -254,7 +255,7 @@ function seedSlots(students) {
     const date = new Date(today);
     date.setDate(today.getDate() + d);
     if (date.getDay() === 0) continue;
-    const dateStr = date.toISOString().slice(0, 10);
+    const dateStr = ymd(date);
     PROFESSORS.forEach(prof => {
       const ps = students.filter(s => s.profId === prof.id && s.active);
       let count = 0;
@@ -923,7 +924,7 @@ function Dashboard({
   const isAdmin = user.role === 'admin';
   const myStudents = isAdmin ? students : students.filter(s => s.profId === user.id);
   const slotArr = Object.values(slots).filter(s => isAdmin || s.profId === user.id);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = ymd(new Date());
   const todaySlots = slotArr.filter(s => s.date === today);
   const now = new Date();
   const wS = new Date(now);
@@ -1371,7 +1372,7 @@ function StudentModal({
       fontSize: 12
     }
   }, "Quitar")), f.examDate && (() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = ymd(new Date());
     const passed = f.examDate < today;
     return React.createElement("p", {
       style: {
@@ -1569,7 +1570,7 @@ function Alumnos({
     }
   }, h)))), React.createElement("tbody", null, list.map(stu => {
     const prof = professors.find(p => p.id === stu.profId);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = ymd(new Date());
     const examPassed = stu.examDate && stu.examDate < today && !stu.examResult;
     const examBg = examPassed ? '#fef2f2' : stu.examResult === 'apto' ? '#f0fdf4' : stu.examResult === 'no_apto' ? '#fff7ed' : 'transparent';
     const setExamResult = result => {
@@ -3092,7 +3093,7 @@ function Horario({
   const [adding, setAdding] = useState(null);
   const [editing, setEditing] = useState(null);
   const week = getWeek(off);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = ymd(new Date());
   const visProfs = vProf === 'all' ? professors : professors.filter(p => p.id === vProf);
   const toggleExam = d => {
     if (!isAdmin) return;
@@ -3207,7 +3208,7 @@ function Horario({
     const tables = profsToExport.map(prof => {
       const rows = TIME_SLOTS.map(time => {
         const cells = week.map((d, di) => {
-          const ds = d.toISOString().slice(0, 10);
+          const ds = ymd(d);
           const isExam = examDays.includes(ds);
           if (isExam) return `<td style="background:#fff7ed;text-align:center;font-size:11px;color:#c2410c;">📝 Examen</td>`;
           const s = Object.values(slots).filter(sl => sl.date === ds && sl.time === time && sl.profId === prof.id);
@@ -3553,7 +3554,7 @@ function Horario({
       fontWeight: 500
     }
   }), week.map((d, di) => {
-    const ds = d.toISOString().slice(0, 10);
+    const ds = ymd(d);
     const isExam = examDays.includes(ds);
     const isToday = ds === today;
     const cs = vProf === 'all' ? visProfs.length : 1;
@@ -3618,7 +3619,7 @@ function Horario({
       whiteSpace: 'nowrap'
     }
   }, time), week.map((d, di) => {
-    const ds = d.toISOString().slice(0, 10);
+    const ds = ymd(d);
     const isExam = examDays.includes(ds);
     return visProfs.map(prof => {
       const cs = Object.values(slots).filter(s => s.date === ds && s.time === time && s.profId === prof.id && (fType === 'all' || s.slotType === fType));
@@ -5153,7 +5154,7 @@ function Disponibilidad({
     return [0, 1, 2, 3, 4, 5].map(i => {
       const d = new Date(mon);
       d.setDate(mon.getDate() + i);
-      const ds = d.toISOString().split('T')[0];
+      const ds = ymd(d);
       return {
         date: ds,
         label: ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][i]

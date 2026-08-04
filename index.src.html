@@ -126,6 +126,10 @@ const VEHICLES=[
 // (09:00, 09:45, 10:30…) y el inicio se puede afinar cada 15 min. Sin desfase.
 const mkGrid=(startH,endMin,step)=>{const a=[];for(let m=startH*60;m<=endMin;m+=step)a.push(`${String((m/60|0)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`);return a;};
 const TIME_SLOTS=mkGrid(7,21*60+45,15);
+// Fecha local YYYY-MM-DD. NO usar date.toISOString() para esto: convierte a UTC
+// y en zonas horarias al este (+UTC) devuelve el DÍA ANTERIOR, lo que hacía que
+// las clases se pintaran/guardaran corridas un día en el panel.
+const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const DAY_NAMES=['Lun','Mar','Mié','Jue','Vie','Sáb'];
 
 const NAMES_INAKI =['Ana García','Luis Martín','Carmen López','Javier Pérez','María Sánchez',
@@ -202,7 +206,7 @@ function seedSlots(students){
   for(let d=-10;d<=18;d++){
     const date=new Date(today);date.setDate(today.getDate()+d);
     if(date.getDay()===0)continue;
-    const dateStr=date.toISOString().slice(0,10);
+    const dateStr=ymd(date);
     PROFESSORS.forEach(prof=>{
       const ps=students.filter(s=>s.profId===prof.id&&s.active);
       let count=0;
@@ -494,7 +498,7 @@ function Dashboard({students,slots,professors,user}){
   const isAdmin=user.role==='admin';
   const myStudents=isAdmin?students:students.filter(s=>s.profId===user.id);
   const slotArr=Object.values(slots).filter(s=>isAdmin||s.profId===user.id);
-  const today=new Date().toISOString().slice(0,10);
+  const today=ymd(new Date());
   const todaySlots=slotArr.filter(s=>s.date===today);
   const now=new Date();
   const wS=new Date(now);wS.setDate(now.getDate()-now.getDay()+1);wS.setHours(0,0,0,0);
@@ -688,7 +692,7 @@ function StudentModal({student,professors,onSave,onClose}){
           )}
         </div>
         {f.examDate&&(()=>{
-          const today=new Date().toISOString().slice(0,10);
+          const today=ymd(new Date());
           const passed=f.examDate<today;
           return(
             <p style={{fontSize:11,marginTop:5,color:passed?'#b91c1c':'#0e6856',fontWeight:600}}>
@@ -792,7 +796,7 @@ function Alumnos({students,setStudents,professors,user}){
           <tbody>
             {list.map(stu=>{
               const prof=professors.find(p=>p.id===stu.profId);
-              const today=new Date().toISOString().slice(0,10);
+              const today=ymd(new Date());
               const examPassed=stu.examDate&&stu.examDate<today&&!stu.examResult;
               const examBg=examPassed?'#fef2f2':stu.examResult==='apto'?'#f0fdf4':stu.examResult==='no_apto'?'#fff7ed':'transparent';
               const setExamResult=(result)=>{
@@ -1403,7 +1407,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const [adding,setAdding]=useState(null);
   const [editing,setEditing]=useState(null);
   const week=getWeek(off);
-  const today=new Date().toISOString().slice(0,10);
+  const today=ymd(new Date());
   const visProfs=vProf==='all'?professors:professors.filter(p=>p.id===vProf);
 
   const toggleExam=d=>{if(!isAdmin)return;setExamDays(ds=>ds.includes(d)?ds.filter(x=>x!==d):[...ds,d]);};
@@ -1450,7 +1454,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     const tables=profsToExport.map(prof=>{
       const rows=TIME_SLOTS.map(time=>{
         const cells=week.map((d,di)=>{
-          const ds=d.toISOString().slice(0,10);
+          const ds=ymd(d);
           const isExam=examDays.includes(ds);
           if(isExam) return `<td style="background:#fff7ed;text-align:center;font-size:11px;color:#c2410c;">📝 Examen</td>`;
           const s=Object.values(slots).filter(sl=>sl.date===ds&&sl.time===time&&sl.profId===prof.id);
@@ -1587,7 +1591,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
             <tr>
               <th style={{width:54,padding:'4px 6px',color:'#94a3b8',fontSize:11,fontWeight:500}}></th>
               {week.map((d,di)=>{
-                const ds=d.toISOString().slice(0,10);
+                const ds=ymd(d);
                 const isExam=examDays.includes(ds);
                 const isToday=ds===today;
                 const cs=vProf==='all'?visProfs.length:1;
@@ -1622,7 +1626,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
               <tr key={time} style={{borderTop:'1px solid #f1f5f9'}}>
                 <td style={{padding:'2px 6px',fontSize:10,color:'#94a3b8',verticalAlign:'top',whiteSpace:'nowrap'}}>{time}</td>
                 {week.map((d,di)=>{
-                  const ds=d.toISOString().slice(0,10);
+                  const ds=ymd(d);
                   const isExam=examDays.includes(ds);
                   return visProfs.map(prof=>{
                     const cs=Object.values(slots).filter(s=>s.date===ds&&s.time===time&&s.profId===prof.id&&(fType==='all'||s.slotType===fType));
@@ -2317,7 +2321,7 @@ function Disponibilidad({user,professors,slots,setSlots}){
     const mon=new Date(now);mon.setDate(now.getDate()+diff);mon.setHours(0,0,0,0);
     return [0,1,2,3,4,5].map(i=>{
       const d=new Date(mon);d.setDate(mon.getDate()+i);
-      const ds=d.toISOString().split('T')[0];
+      const ds=ymd(d);
       return {date:ds,label:['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][i]};
     });
   }
