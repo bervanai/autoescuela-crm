@@ -1245,6 +1245,39 @@ app.post('/bot', async (req, res) => {
 
   let state = pending[from];
 
+  // ── Cancelación GLOBAL (prioritaria) ──────────────────
+  // Funciona AUNQUE el alumno esté a mitad de otra conversación (antes solo se
+  // detectaba sin conversación abierta, por eso "anular la clase del jueves"
+  // durante una reserva se ignoraba). Entiende cancelar/anular/quitar y, si
+  // menciona un día ("la del jueves"), cancela esa clase directamente.
+  if ((!state || state.type !== 'cancel') && /(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
+    const stC = (await loadStudents()).find(s => s.phone === from && s.active);
+    if (stC) {
+      const mine = await upcomingSlotsFor(stC.id);
+      if (!mine.length) {
+        await sendWA(from, `No tienes clases reservadas que cancelar 👍`);
+        done(); return;
+      }
+      const profIdC = stC.profId ?? stC.prof_id;
+      const { dow } = parseBookingText(body);
+      const delDia = dow ? mine.filter(s => new Date(String(s.date).substring(0,10) + 'T12:00:00').getDay() === dow) : [];
+      if (delDia.length === 1) {                       // un solo candidato ese día → cancelar ya
+        await updateSlot(delDia[0].id, { status: 'cancelled' });
+        delete pending[from];
+        await sendWA(from, `❌ Clase cancelada: *${slotLabel(delDia[0])}*\n\nSi quieres otra, escríbeme *hola*. 👋`);
+        await notifyProf(profIdC, `❌ *Clase cancelada por el alumno*\n👤 ${stC.name}\n📅 ${slotLabel(delDia[0])}`);
+        done(); return;
+      }
+      const lista = delDia.length ? delDia : mine;     // varias o sin día → pedir número
+      pending[from] = { type: 'cancel', studentId: stC.id, studentName: stC.name, profId: profIdC, slots: lista, expires: Date.now() + 3600000 };
+      await sendWA(from,
+        `Estas son tus clases${delDia.length ? ' de ese día' : ''}:\n\n` +
+        lista.map((s, i) => `*${i + 1}.* ${slotLabel(s)}`).join('\n') +
+        `\n\n¿Cuál quieres cancelar? Responde con el número, o *listo* para salir.`);
+      done(); return;
+    }
+  }
+
   // ── Sin contexto: alumno escribe espontáneamente ──────
   if (!state) {
     const allStudents = await loadStudents();
