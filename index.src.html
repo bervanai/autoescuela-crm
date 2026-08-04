@@ -1308,7 +1308,7 @@ function Vehiculos({vehicles,setVehicles,user}){
           <F label="Matrícula"><input className={inp} value={form.plate} onChange={e=>s('plate',e.target.value)}/></F>
           <F label="Tipo de carnet">
             <select className={inp} value={form.type} onChange={e=>s('type',e.target.value)}>
-              {['A','A1','A2','B','C','D'].map(t=><option key={t}>{t}</option>)}
+              {LICENSE_OPTIONS.map(t=><option key={t} value={t}>{t}</option>)}
             </select>
           </F>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>

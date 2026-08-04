@@ -2870,8 +2870,9 @@ function Vehiculos({
     className: inp,
     value: form.type,
     onChange: e => s('type', e.target.value)
-  }, ['A', 'A1', 'A2', 'B', 'C', 'D'].map(t => React.createElement("option", {
-    key: t
+  }, LICENSE_OPTIONS.map(t => React.createElement("option", {
+    key: t,
+    value: t
   }, t)))), React.createElement("div", {
     style: {
       display: 'flex',
