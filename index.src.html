@@ -1411,7 +1411,13 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const visProfs=vProf==='all'?professors:professors.filter(p=>p.id===vProf);
 
   const toggleExam=d=>{if(!isAdmin)return;setExamDays(ds=>ds.includes(d)?ds.filter(x=>x!==d):[...ds,d]);};
-  const saveSlot=f=>{const k=`${f.date}_${f.time}_${f.profId}`;setSlots(ss=>({...ss,[k]:{...f,id:k}}));setAdding(null);setEditing(null);};
+  // ── DESHACER: guarda el estado del horario ANTES de cada cambio, para poder
+  // revertir si algo se hace mal (borrados, acciones masivas, mover, crear…).
+  const undoStack=useRef([]);
+  const [canUndo,setCanUndo]=useState(false);
+  const pushUndo=()=>{undoStack.current.push(slots);if(undoStack.current.length>25)undoStack.current.shift();setCanUndo(true);};
+  const undo=()=>{if(!undoStack.current.length)return;setSlots(undoStack.current.pop());setCanUndo(undoStack.current.length>0);};
+  const saveSlot=f=>{pushUndo();const k=`${f.date}_${f.time}_${f.profId}`;setSlots(ss=>({...ss,[k]:{...f,id:k}}));setAdding(null);setEditing(null);};
   // Avisa al alumno por WhatsApp (vía el bot) de que su clase se ha cancelado.
   const notifyCancel=async(sl)=>{
     if(!sl||!sl.studentId)return;
@@ -1431,17 +1437,19 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
       const stu=students.find(s=>s.id===sl.studentId);
       if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(sl);
     }
+    pushUndo();
     setSlots(ss=>{const n={...ss};delete n[id];return n;});setEditing(null);
   };
   // Mover una clase (arrastrar) a otra hora/día/profesor, estilo Google Calendar.
   // Comprueba el solape antes de mover. Las clases del bot conservan su id.
   const moveSlot=(slotId,date,time,profId)=>{
+    const sl=slots[slotId]; if(!sl)return;
+    if(sl.date===date&&sl.time===time&&sl.profId===profId)return;
+    if(wouldClash(slots,slotId,profId,date,time,sl.duration||45)){
+      alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');return;
+    }
+    pushUndo();
     setSlots(ss=>{
-      const sl=ss[slotId]; if(!sl)return ss;
-      if(sl.date===date&&sl.time===time&&sl.profId===profId)return ss;
-      if(wouldClash(ss,slotId,profId,date,time,sl.duration||45)){
-        alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');return ss;
-      }
       const n={...ss};
       if(sl.fromBot){ n[slotId]={...sl,date,time,profId}; }
       else { delete n[slotId]; const nid=`slot_${Date.now()}_${Math.random().toString(36).slice(2,6)}`; n[nid]={...sl,id:nid,date,time,profId}; }
@@ -1461,17 +1469,20 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     if(conAlumno.length&&window.confirm(`¿Avisar por WhatsApp a los ${conAlumno.length} alumno(s) de que se cancelan sus clases?`)){
       conAlumno.forEach(sl=>notifyCancel(sl));
     }
+    pushUndo();
     setSlots(ss=>{const n={...ss};sel.forEach(id=>delete n[id]);return n;});
     exitSel();
   };
   const bulkConfirm=val=>{
     if(!sel.size)return;
+    pushUndo();
     setSlots(ss=>{const n={...ss};sel.forEach(id=>{if(n[id])n[id]={...n[id],confirmed:val};});return n;});
     clearSel();
   };
   // Edición masiva del TIPO de clase (examen / práctica) de las seleccionadas.
   const bulkType=t=>{
     if(!sel.size)return;
+    pushUndo();
     setSlots(ss=>{const n={...ss};sel.forEach(id=>{if(n[id])n[id]={...n[id],slotType:t};});return n;});
     clearSel();
   };
@@ -1579,6 +1590,14 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
               background:selMode?'#fef2f2':'#fff',color:selMode?'#dc2626':'#475569',
               borderColor:selMode?'#fecaca':'#e2e8f0',fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>
             <Icon name={selMode?'close':'checklist'} size={16}/>{selMode?'Salir':'Seleccionar'}
+          </button>
+        )}
+        {isAdmin&&(
+          <button onClick={undo} disabled={!canUndo} title="Revierte el último cambio del horario"
+            style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',borderRadius:7,border:'1px solid #e2e8f0',
+              background:canUndo?'#fff':'#f8fafc',color:canUndo?'#b45309':'#cbd5e1',
+              fontSize:12,fontWeight:600,cursor:canUndo?'pointer':'not-allowed',whiteSpace:'nowrap'}}>
+            <Icon name="undo" size={16}/>Deshacer
           </button>
         )}
       </div>

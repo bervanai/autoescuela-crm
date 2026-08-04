@@ -3100,7 +3100,20 @@ function Horario({
     if (!isAdmin) return;
     setExamDays(ds => ds.includes(d) ? ds.filter(x => x !== d) : [...ds, d]);
   };
+  const undoStack = useRef([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const pushUndo = () => {
+    undoStack.current.push(slots);
+    if (undoStack.current.length > 25) undoStack.current.shift();
+    setCanUndo(true);
+  };
+  const undo = () => {
+    if (!undoStack.current.length) return;
+    setSlots(undoStack.current.pop());
+    setCanUndo(undoStack.current.length > 0);
+  };
   const saveSlot = f => {
+    pushUndo();
     const k = `${f.date}_${f.time}_${f.profId}`;
     setSlots(ss => ({
       ...ss,
@@ -3145,6 +3158,7 @@ function Horario({
       const stu = students.find(s => s.id === sl.studentId);
       if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(sl);
     }
+    pushUndo();
     setSlots(ss => {
       const n = {
         ...ss
@@ -3155,14 +3169,15 @@ function Horario({
     setEditing(null);
   };
   const moveSlot = (slotId, date, time, profId) => {
+    const sl = slots[slotId];
+    if (!sl) return;
+    if (sl.date === date && sl.time === time && sl.profId === profId) return;
+    if (wouldClash(slots, slotId, profId, date, time, sl.duration || 45)) {
+      alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');
+      return;
+    }
+    pushUndo();
     setSlots(ss => {
-      const sl = ss[slotId];
-      if (!sl) return ss;
-      if (sl.date === date && sl.time === time && sl.profId === profId) return ss;
-      if (wouldClash(ss, slotId, profId, date, time, sl.duration || 45)) {
-        alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');
-        return ss;
-      }
       const n = {
         ...ss
       };
@@ -3206,6 +3221,7 @@ function Horario({
     if (conAlumno.length && window.confirm(`¿Avisar por WhatsApp a los ${conAlumno.length} alumno(s) de que se cancelan sus clases?`)) {
       conAlumno.forEach(sl => notifyCancel(sl));
     }
+    pushUndo();
     setSlots(ss => {
       const n = {
         ...ss
@@ -3217,6 +3233,7 @@ function Horario({
   };
   const bulkConfirm = val => {
     if (!sel.size) return;
+    pushUndo();
     setSlots(ss => {
       const n = {
         ...ss
@@ -3233,6 +3250,7 @@ function Horario({
   };
   const bulkType = t => {
     if (!sel.size) return;
+    pushUndo();
     setSlots(ss => {
       const n = {
         ...ss
@@ -3467,7 +3485,28 @@ function Horario({
   }, React.createElement(Icon, {
     name: selMode ? 'close' : 'checklist',
     size: 16
-  }), selMode ? 'Salir' : 'Seleccionar')), selMode && React.createElement("div", {
+  }), selMode ? 'Salir' : 'Seleccionar'), isAdmin && React.createElement("button", {
+    onClick: undo,
+    disabled: !canUndo,
+    title: "Revierte el último cambio del horario",
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 5,
+      padding: '5px 11px',
+      borderRadius: 7,
+      border: '1px solid #e2e8f0',
+      background: canUndo ? '#fff' : '#f8fafc',
+      color: canUndo ? '#b45309' : '#cbd5e1',
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: canUndo ? 'pointer' : 'not-allowed',
+      whiteSpace: 'nowrap'
+    }
+  }, React.createElement(Icon, {
+    name: "undo",
+    size: 16
+  }), "Deshacer")), selMode && React.createElement("div", {
     style: {
       padding: '8px 16px',
       display: 'flex',
