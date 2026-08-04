@@ -81,6 +81,7 @@ const META_API_VER      = process.env.META_API_VERSION || 'v21.0';
 // Nombres de las plantillas aprobadas en Meta (para mensajes que INICIA el bot)
 const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'reserva_semana';
 const TPL_RECORDATORIO = process.env.META_TPL_RECORDATORIO || 'recordatorio_clase';
+const TPL_CANCELADA    = process.env.META_TPL_CANCELADA    || 'clase_cancelada';
 const USE_META = !!(META_TOKEN && META_PHONE_ID);
 
 // Proveedor activo: SMS > Meta > Twilio WhatsApp > ninguno
@@ -1840,6 +1841,28 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
 
   console.log(`📤 CRM → recordatorio manual enviado a ${st.name}`);
   res.json({ ok: true, student: st.name });
+});
+
+// POST /api/notify-cancel — el ADMIN canceló una clase en el panel y quiere
+// avisar al alumno por WhatsApp. Recibe los datos de la clase (el slot puede
+// que ya no exista en la BD). Envía la plantilla clase_cancelada.
+app.post('/api/notify-cancel', async (req, res) => {
+  const { studentId, phone, date, time, dayName } = req.body || {};
+  let name = req.body?.name || '';
+  let to = phone || null;
+  if (!to && studentId) {
+    const st = (await loadStudents()).find(s => s.id === studentId);
+    if (st) { to = st.phone; name = name || st.name; }
+  }
+  if (!to) return res.status(400).json({ error: 'Falta el teléfono del alumno' });
+  const cita = `${dayName || (date ? formatDate(date) : '')}${time ? ' a las ' + String(time).substring(0,5) + 'h' : ''}`.trim() || 'tu próxima clase';
+  const msg =
+    `❌ *Clase cancelada — ${SCHOOL_NAME}*\n\n` +
+    `Hola ${name || ''}, tu clase del *${cita}* ha sido *cancelada* por la autoescuela.\n\n` +
+    `Si quieres reprogramarla, escríbeme *hola* y te ayudo. 🚗`;
+  await sendBusinessInitiated(to, TPL_CANCELADA, [name || '', cita], msg);
+  console.log(`📤 CRM → aviso de cancelación enviado a ${name || to}`);
+  res.json({ ok: true });
 });
 
 // ════════════════════════════════════════════════════════════

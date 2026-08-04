@@ -3111,7 +3111,39 @@ function Horario({
     setAdding(null);
     setEditing(null);
   };
+  const notifyCancel = async sl => {
+    if (!sl || !sl.studentId) return;
+    const stu = students.find(s => s.id === sl.studentId);
+    const url = (loadSchool().botUrl || '').replace(/\/$/, '');
+    if (!stu || !url) return;
+    const dayName = new Date(sl.date + 'T12:00:00').toLocaleDateString('es-ES', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long'
+    });
+    try {
+      await fetch(`${url}/api/notify-cancel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          studentId: stu.id,
+          name: stu.name,
+          date: sl.date,
+          time: sl.time,
+          dayName
+        }),
+        signal: AbortSignal.timeout(6000)
+      });
+    } catch (e) {}
+  };
   const delSlot = id => {
+    const sl = slots[id];
+    if (sl && sl.studentId) {
+      const stu = students.find(s => s.id === sl.studentId);
+      if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(sl);
+    }
     setSlots(ss => {
       const n = {
         ...ss
@@ -3169,6 +3201,10 @@ function Horario({
   const bulkDelete = () => {
     if (!sel.size) return;
     if (!window.confirm(`¿Borrar ${sel.size} clase(s) seleccionada(s)?`)) return;
+    const conAlumno = [...sel].map(id => slots[id]).filter(s => s && s.studentId);
+    if (conAlumno.length && window.confirm(`¿Avisar por WhatsApp a los ${conAlumno.length} alumno(s) de que se cancelan sus clases?`)) {
+      conAlumno.forEach(sl => notifyCancel(sl));
+    }
     setSlots(ss => {
       const n = {
         ...ss
@@ -3188,6 +3224,22 @@ function Horario({
         if (n[id]) n[id] = {
           ...n[id],
           confirmed: val
+        };
+      });
+      return n;
+    });
+    clearSel();
+  };
+  const bulkType = t => {
+    if (!sel.size) return;
+    setSlots(ss => {
+      const n = {
+        ...ss
+      };
+      sel.forEach(id => {
+        if (n[id]) n[id] = {
+          ...n[id],
+          slotType: t
         };
       });
       return n;
@@ -3449,6 +3501,18 @@ function Horario({
     c: '#b45309',
     bg: '#fffbeb',
     bc: '#fde68a'
+  }, {
+    l: '📝 Examen',
+    fn: () => bulkType('examen'),
+    c: '#581c87',
+    bg: '#faf5ff',
+    bc: '#e9d5ff'
+  }, {
+    l: '🚗 Práctica',
+    fn: () => bulkType('practica'),
+    c: '#1e3a8a',
+    bg: '#eff6ff',
+    bc: '#bfdbfe'
   }, {
     l: 'Deseleccionar',
     fn: clearSel,
