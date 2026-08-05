@@ -598,11 +598,51 @@ function overlapsExisting(slots, profId, date, time, dur = SLOT_MIN){
   });
 }
 
-async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null) {
+// ── Buffer de cambio de vehículo (SOLO Pedro) ──
+// Pedro necesita 15 min extra para cambiar de coche cuando dos clases seguidas
+// son de distinto tipo de vehículo. Así el bot nunca ofrece/reserva un hueco
+// pegado a otra clase de vehículo distinto: siempre deja los 15 min. Solo
+// aplica a Pedro y a fechas futuras (a partir de mañana): no toca las de hoy.
+const PEDRO_ID = process.env.PEDRO_PROF_ID || 'prof_pedro';
+const VEH_CHANGE_MIN = 15;
+function isFutureLocalDate(date) {
+  return String(date).substring(0, 10) > ymdLocal(new Date());
+}
+async function buildVehMap() {
+  const students = await loadStudents();
+  const m = {};
+  for (const s of students) if (s.id) m[s.id] = s.vehicleType || null;
+  return m;
+}
+// ¿Hay una clase adyacente de OTRO tipo de vehículo a menos de 15 min? En ese
+// caso Pedro no llega a cambiar de coche → ese hueco no vale. Solo para Pedro.
+function pedroVehConflict(slots, date, time, bookerVeh, vehOf, dur = SLOT_MIN) {
+  if (!bookerVeh || !vehOf) return false;
+  const aStart = toMin(time), aEnd = aStart + dur;
+  const d10 = String(date).substring(0, 10);
+  return slots.some(s => {
+    if (!(s.profId === PEDRO_ID || s.prof_id === PEDRO_ID)) return false;
+    if (String(s.date).substring(0, 10) !== d10) return false;
+    const sid = s.studentId || s.student_id;
+    if (!sid) return false;
+    if (s.status === 'cancelled') return false;
+    const otherVeh = vehOf[sid] || null;
+    if (!otherVeh || otherVeh === bookerVeh) return false; // mismo vehículo o desconocido: sin buffer
+    const bStart = toMin(String(s.time).substring(0, 5));
+    const bEnd = bStart + (s.duration || SLOT_MIN);
+    if (aStart >= bEnd) return (aStart - bEnd) < VEH_CHANGE_MIN; // clase nueva va DESPUÉS
+    if (bStart >= aEnd) return (bStart - aEnd) < VEH_CHANGE_MIN; // clase nueva va ANTES
+    return false; // se solapan → ya lo pilla overlapsExisting
+  });
+}
+
+async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null, bookerVehType = null) {
   // Una sola ronda de consultas en paralelo (antes: una por día/hora → lento)
   const [slots, examDays, avail, blocked] = await Promise.all([
     loadSlots(), loadExamDays(), loadAvailability(), loadBlocked(),
   ]);
+  // Mapa alumno→vehículo solo si es Pedro (para el buffer de cambio de coche)
+  const vehOf = (profId === PEDRO_ID && bookerVehType) ? await buildVehMap() : null;
   // Anclar al mediodía local: evita desplazamientos de día por zona horaria
   const start = fromDate ? new Date(`${String(fromDate).substring(0, 10)}T12:00:00`) : new Date();
   if (!fromDate) start.setDate(start.getDate() + 1);
@@ -626,13 +666,15 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
       // Ocupado si CUALQUIER clase existente se solapa con estos 45 min (no solo
       // si empieza a la misma hora). Así las clases nunca se pisan.
       const taken = overlapsExisting(slots, profId, date, hour);
-      if (!taken) {
-        free.push({
-          date,
-          time:    hour,
-          dayName: DAY_LABELS[dow],
-        });
-      }
+      if (taken) continue;
+      // Pedro: dejar 15 min si la clase de al lado es de otro tipo de vehículo
+      if (profId === PEDRO_ID && isFutureLocalDate(date) &&
+          pedroVehConflict(slots, date, hour, bookerVehType, vehOf)) continue;
+      free.push({
+        date,
+        time:    hour,
+        dayName: DAY_LABELS[dow],
+      });
     }
   }
   return free;
@@ -918,6 +960,7 @@ function makeSuggestState(st, freeSlots, weekMode = false, pistaHours = null) {
     currentDate: null,     // día cuyas horas se le están mostrando al alumno
     weekMode,              // true: solo ofrecer huecos de la semana que viene
     pistaHours,            // filtro de horas de pista (null = sin restricción)
+    vehType:     st.vehicleType ?? st.vehicle_type ?? null, // para el buffer de Pedro
     expires:     thuExpiry(),
   };
 }
@@ -1014,7 +1057,7 @@ async function sendBookingRequests(force = false) {
 
     const profId = st.profId ?? st.prof_id;
     const pistaHours = await pistaFilterFor(st);
-    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours);
+    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours, st.vehicleType);
     if (!free.length) {
       await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Contacta con la autoescuela.`);
       continue;
@@ -1098,7 +1141,7 @@ async function sendReminders() {
 // ════════════════════════════════════════════════════════════
 
 let _slotSeq = 0;
-async function bookSlot(studentId, studentName, profId, slot) {
+async function bookSlot(studentId, studentName, profId, slot, bookerVehType = null) {
   // Guarda anti-solape: entre ofrecer la hora y reservarla, otra reserva pudo
   // ocupar un tramo que se solapa (el índice único solo pilla la MISMA hora
   // exacta, no un solape de 45 min). Si se solapa, no reservamos.
@@ -1106,6 +1149,16 @@ async function bookSlot(studentId, studentName, profId, slot) {
   if (overlapsExisting(existentes, profId, slot.date, String(slot.time).substring(0,5))) {
     console.error(`❌ Reserva NO guardada (se solapa con otra clase): ${studentName} → ${slot.date} ${slot.time}`);
     return null;
+  }
+  // Pedro: no reservar pegado a una clase de otro vehículo (necesita 15 min
+  // para el cambio de coche). Solo Pedro y solo fechas futuras.
+  if (profId === PEDRO_ID && isFutureLocalDate(slot.date)) {
+    const vehOf = await buildVehMap();
+    const veh = bookerVehType ?? vehOf[studentId] ?? null;
+    if (pedroVehConflict(existentes, slot.date, String(slot.time).substring(0,5), veh, vehOf)) {
+      console.error(`❌ Reserva NO guardada (Pedro necesita 15 min para cambio de vehículo): ${studentName} → ${slot.date} ${slot.time}`);
+      return null;
+    }
   }
   // Sufijo incremental: evita colisión de PK al reservar varias clases
   // en el mismo milisegundo (atajo "3 clases")
@@ -1296,7 +1349,7 @@ app.post('/bot', async (req, res) => {
       const t1 = String(base.time).substring(0, 5);
       const t2 = addMinutes(t1, SLOT_MIN);                       // media hora siguiente
       if (await isSlotFree(profIdD, base.date, t2)) {
-        const saved = await bookSlot(stD.id, stD.name, profIdD, { date: base.date, time: t2, dayName: base.dayName });
+        const saved = await bookSlot(stD.id, stD.name, profIdD, { date: base.date, time: t2, dayName: base.dayName }, stD.vehicleType);
         if (saved) {
           const resumen = await listaClasesAlumno(stD.id);
           await sendWA(from,
@@ -1379,7 +1432,7 @@ app.post('/bot', async (req, res) => {
 
     const nextMon = ymdLocal(nextWeekMonday());
     const pistaHours = await pistaFilterFor(st);
-    const free = await nextFreeSlots(profId, 80, nextMon, pistaHours);
+    const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType);
     if (!free.length) {
       await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
       done();
@@ -1465,7 +1518,7 @@ app.post('/bot', async (req, res) => {
 
     // Huecos libres actuales, agrupados por día (excluyendo los ya reservados)
     const bookedDates = (state.booked || []).map(b => b.date);
-    const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours);
+    const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType);
     const days = daysWithSlots(allFree, bookedDates);
 
     if (!days.length) {
@@ -1515,11 +1568,11 @@ app.post('/bot', async (req, res) => {
           done();
           return;
         }
-        const saved = await bookSlot(state.studentId, state.studentName, state.profId, match);
+        const saved = await bookSlot(state.studentId, state.studentName, state.profId, match, state.vehType);
         if (!saved) {
           // El hueco se ocupó entre la comprobación y el guardado (o error de
           // BD): NO confirmamos. Refrescamos huecos reales y re-ofrecemos.
-          const freshFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours);
+          const freshFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType);
           const freshDays = daysWithSlots(freshFree, (state.booked || []).map(b => b.date));
           if (!freshDays.length) {
             delete pending[from];
@@ -1788,7 +1841,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   const profId = st.profId ?? st.prof_id;
   const nextMon = ymdLocal(nextWeekMonday());
   const pistaHours = await pistaFilterFor(st);
-  const free = await nextFreeSlots(profId, 80, nextMon, pistaHours);
+  const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType);
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
   const day0 = daysWithSlots(free)[0];
