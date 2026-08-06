@@ -1886,8 +1886,16 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   if (!st)             return res.status(404).json({ error: 'Alumno no encontrado' });
   if (!st.phone)       return res.status(400).json({ error: 'El alumno no tiene teléfono' });
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
-  // Si ya está en una conversación abierta, no reenviar el saludo (evita el
-  // "Hola 👋" duplicado encima de una charla ya en curso).
+  // force=1 (o una conversación ya caducada) → reiniciar la charla desde cero.
+  const forceRestart = req.query.force === '1' || req.body?.force === true;
+  const cur = pending[st.phone];
+  const caducada = cur && cur.expires && cur.expires < Date.now();
+  if (cur && (forceRestart || caducada)) {
+    delete pending[st.phone];
+    await persistPending(st.phone); // sin estado en memoria → borra la fila
+  }
+  // Si ya está en una conversación abierta (y no forzamos), no reenviar el
+  // saludo (evita el "Hola 👋" duplicado encima de una charla en curso).
   if (pending[st.phone]) return res.json({ ok: true, student: st.name, note: 'ya en conversación' });
 
   const profId = st.profId ?? st.prof_id;
