@@ -643,6 +643,25 @@ function pedroVehConflict(slots, date, time, bookerVeh, vehOf, dur = SLOT_MIN) {
     return false; // se solapan → ya lo pilla overlapsExisting
   });
 }
+// ¿Pedro ya tiene ese día una clase del MISMO vehículo pegada (o casi) a este
+// hueco? Se usa para AGRUPAR: preferimos ofrecer los huecos contiguos del mismo
+// coche para que las clases salgan seguidas y Pedro no cambie de coche. Solo Pedro.
+function pedroSameVehAdjacent(slots, date, time, bookerVeh, vehOf, dur = SLOT_MIN) {
+  if (!bookerVeh || !vehOf) return false;
+  const aStart = toMin(time), aEnd = aStart + dur;
+  const d10 = String(date).substring(0, 10);
+  return slots.some(s => {
+    if (!(s.profId === PEDRO_ID || s.prof_id === PEDRO_ID)) return false;
+    if (String(s.date).substring(0, 10) !== d10) return false;
+    const sid = s.studentId || s.student_id;
+    if (!sid || s.status === 'cancelled') return false;
+    if ((vehOf[sid] || null) !== bookerVeh) return false; // solo MISMO vehículo
+    const bStart = toMin(String(s.time).substring(0, 5));
+    const bEnd = bStart + (s.duration || SLOT_MIN);
+    const gap = aStart >= bEnd ? aStart - bEnd : (bStart >= aEnd ? bStart - aEnd : 0);
+    return gap <= VEH_CHANGE_MIN; // pegada o dentro del margen de cambio
+  });
+}
 
 async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null, bookerVehType = null, untilDate = null) {
   // Una sola ronda de consultas en paralelo (antes: una por día/hora → lento)
@@ -657,6 +676,8 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
   start.setHours(12, 0, 0, 0);
 
   const free = [];
+  // Pedro: agrupar por vehículo (solo si sabemos el vehículo del alumno)
+  const clusterPedro = (profId === PEDRO_ID && vehOf && bookerVehType);
   for (let d = 0; d < 60 && free.length < count; d++) {
     const dt  = new Date(start);
     dt.setDate(start.getDate() + d);
@@ -668,8 +689,9 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
     // Horario de pista: si el alumno es de pista, solo estas horas ese día
     const pistaDia = pistaHours ? (pistaHours[DAY_KEY_MAP[dow]] || []) : null;
 
+    // Recolectamos los huecos válidos del día y luego (Pedro) los reordenamos
+    const dayHoles = [];
     for (const hour of hoursForProfDaySync(avail, profId, dow)) {
-      if (free.length >= count) break;
       if (pistaDia && !pistaDia.includes(hour)) continue; // fuera del horario de pista
       if (isBlockedSlotSync(blocked, profId, date, hour)) continue;
       // Ocupado si CUALQUIER clase existente se solapa con estos 45 min (no solo
@@ -679,11 +701,26 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
       // Pedro: dejar 15 min si la clase de al lado es de otro tipo de vehículo
       if (profId === PEDRO_ID && isFutureLocalDate(date) &&
           pedroVehConflict(slots, date, hour, bookerVehType, vehOf)) continue;
-      free.push({
+      dayHoles.push({
         date,
         time:    hour,
         dayName: DAY_LABELS[dow],
       });
+    }
+    // Pedro: dentro del día, primero los huecos pegados a una clase del MISMO
+    // vehículo (para que salgan seguidas); el resto conserva su orden horario.
+    if (clusterPedro && dayHoles.length > 1) {
+      const adj = dayHoles.filter(h => pedroSameVehAdjacent(slots, h.date, h.time, bookerVehType, vehOf));
+      if (adj.length && adj.length < dayHoles.length) {
+        const adjTimes = new Set(adj.map(h => h.time));
+        const rest = dayHoles.filter(h => !adjTimes.has(h.time));
+        dayHoles.length = 0;
+        dayHoles.push(...adj, ...rest);
+      }
+    }
+    for (const hole of dayHoles) {
+      if (free.length >= count) break;
+      free.push(hole);
     }
   }
   return free;
