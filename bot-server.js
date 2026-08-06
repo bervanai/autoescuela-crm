@@ -82,6 +82,7 @@ const META_API_VER      = process.env.META_API_VERSION || 'v21.0';
 const TPL_PROPUESTA    = process.env.META_TPL_PROPUESTA    || 'reserva_semana';
 const TPL_RECORDATORIO = process.env.META_TPL_RECORDATORIO || 'recordatorio_clase';
 const TPL_CANCELADA    = process.env.META_TPL_CANCELADA    || 'clase_cancelada';
+const TPL_MOVIDA       = process.env.META_TPL_MOVIDA       || 'clase_movida';
 const USE_META = !!(META_TOKEN && META_PHONE_ID);
 
 // Proveedor activo: SMS > Meta > Twilio WhatsApp > ninguno
@@ -1946,6 +1947,31 @@ app.post('/api/notify-cancel', async (req, res) => {
     `Si quieres reprogramarla, escríbeme *hola* y te ayudo. 🚗`;
   await sendBusinessInitiated(to, TPL_CANCELADA, [name || '', cita], msg);
   console.log(`📤 CRM → aviso de cancelación enviado a ${name || to}`);
+  res.json({ ok: true });
+});
+
+// POST /api/notify-move — el ADMIN movió una clase en el panel a otra hora/día
+// y quiere avisar al alumno por WhatsApp. Envía la plantilla clase_movida.
+app.post('/api/notify-move', async (req, res) => {
+  const b = req.body || {};
+  let name = b.name || '';
+  let to = b.phone || null;
+  if (!to && b.studentId) {
+    const st = (await loadStudents()).find(s => s.id === b.studentId);
+    if (st) { to = st.phone; name = name || st.name; }
+  }
+  if (!to) return res.status(400).json({ error: 'Falta el teléfono del alumno' });
+  const citaOf = (dayName, date, time) =>
+    `${dayName || (date ? formatDate(date) : '')}${time ? ' a las ' + String(time).substring(0,5) + 'h' : ''}`.trim();
+  const citaVieja = citaOf(b.oldDayName, b.oldDate, b.oldTime) || 'tu clase';
+  const citaNueva = citaOf(b.newDayName, b.newDate, b.newTime) || 'una nueva hora';
+  const msg =
+    `🔄 *Cambio de horario — ${SCHOOL_NAME}*\n\n` +
+    `Hola ${name || ''}, tu clase del *${citaVieja}* se ha *movido*.\n` +
+    `Nueva cita: *${citaNueva}*.\n\n` +
+    `Si no te viene bien, escríbeme *hola* y lo reorganizamos. 🚗`;
+  await sendBusinessInitiated(to, TPL_MOVIDA, [name || '', citaVieja, citaNueva], msg);
+  console.log(`📤 CRM → aviso de cambio de horario enviado a ${name || to}`);
   res.json({ ok: true });
 });
 

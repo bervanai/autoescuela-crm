@@ -1431,6 +1431,21 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
         signal:AbortSignal.timeout(6000)});
     }catch(e){/* si el bot no responde, la clase se borra igual */}
   };
+  // Avisa al alumno de que su clase se ha MOVIDO a otra hora/día.
+  const notifyMove=async(sl,newDate,newTime)=>{
+    if(!sl||!sl.studentId)return;
+    const stu=students.find(s=>s.id===sl.studentId);
+    const url=(loadSchool().botUrl||'').replace(/\/$/,'');
+    if(!stu||!url)return;
+    const dn=d=>new Date(d+'T12:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+    try{
+      await fetch(`${url}/api/notify-move`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({studentId:stu.id,name:stu.name,
+          oldDate:sl.date,oldTime:sl.time,oldDayName:dn(sl.date),
+          newDate,newTime,newDayName:dn(newDate)}),
+        signal:AbortSignal.timeout(6000)});
+    }catch(e){/* si el bot no responde, la clase se mueve igual */}
+  };
   const delSlot=id=>{
     const sl=slots[id];
     if(sl&&sl.studentId){
@@ -1447,6 +1462,10 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     if(sl.date===date&&sl.time===time&&sl.profId===profId)return;
     if(wouldClash(slots,slotId,profId,date,time,sl.duration||45)){
       alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');return;
+    }
+    if(sl.studentId){
+      const stu=students.find(s=>s.id===sl.studentId);
+      if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que su clase se mueve a otra hora?`)) notifyMove(sl,date,time);
     }
     pushUndo();
     setSlots(ss=>{

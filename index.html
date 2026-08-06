@@ -3152,6 +3152,36 @@ function Horario({
       });
     } catch (e) {}
   };
+  const notifyMove = async (sl, newDate, newTime) => {
+    if (!sl || !sl.studentId) return;
+    const stu = students.find(s => s.id === sl.studentId);
+    const url = (loadSchool().botUrl || '').replace(/\/$/, '');
+    if (!stu || !url) return;
+    const dn = d => new Date(d + 'T12:00:00').toLocaleDateString('es-ES', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long'
+    });
+    try {
+      await fetch(`${url}/api/notify-move`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          studentId: stu.id,
+          name: stu.name,
+          oldDate: sl.date,
+          oldTime: sl.time,
+          oldDayName: dn(sl.date),
+          newDate,
+          newTime,
+          newDayName: dn(newDate)
+        }),
+        signal: AbortSignal.timeout(6000)
+      });
+    } catch (e) {}
+  };
   const delSlot = id => {
     const sl = slots[id];
     if (sl && sl.studentId) {
@@ -3175,6 +3205,10 @@ function Horario({
     if (wouldClash(slots, slotId, profId, date, time, sl.duration || 45)) {
       alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');
       return;
+    }
+    if (sl.studentId) {
+      const stu = students.find(s => s.id === sl.studentId);
+      if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que su clase se mueve a otra hora?`)) notifyMove(sl, date, time);
     }
     pushUndo();
     setSlots(ss => {
