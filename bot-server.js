@@ -1353,33 +1353,53 @@ app.post('/bot', async (req, res) => {
   }
 
   // ── Clase DOBLE: el alumno quiere 90 min = dos clases seguidas de 45 ──
-  // Reconoce "doble", "dos horas", etc. Añade la media hora siguiente a su
-  // última clase (o a su próxima clase) si está libre.
+  // Reconoce "doble", "dos horas", etc. Si el alumno indica DÍA y HORA en el
+  // mensaje (p.ej. "miércoles 9:30 doble") se reservan esas dos medias horas
+  // seguidas. Si no indica hora, se dobla su última clase reservada.
   if (/(clase doble|\bdoble\b|dos horas|2 horas|90 ?min|hora y media)/.test(norm(body))) {
     const stD = (await loadStudents()).find(s => s.phone === from && s.active);
     if (stD) {
       const profIdD = stD.profId ?? stD.prof_id;
-      let base = (state && Array.isArray(state.booked) && state.booked.length) ? state.booked[state.booked.length - 1] : null;
-      if (!base) { const up = await upcomingSlotsFor(stD.id, 1); base = up[0] || null; }
-      if (!base) {
-        await sendWA(from, `Para una clase *doble* primero reserva una hora y luego dime *doble*. Escríbeme *hola* y lo vemos. 🚗`);
+      const pb = parseBookingText(body);
+      let baseDate = null, t1 = null;
+      if (pb.hour) {
+        // El alumno dijo una hora concreta → esa es la 1ª media hora de la doble
+        t1 = pb.hour.padStart(5, '0');
+        if (pb.dow) { const df = dateForDow(pb.dow); baseDate = df ? df.date : null; }
+        if (!baseDate) baseDate = (state && state.currentDate) || null;
+        if (!baseDate) { const up = await upcomingSlotsFor(stD.id, 1); baseDate = up[0]?.date || null; }
+      } else {
+        // Sin hora → doblar la última clase reservada (o la próxima)
+        let base = (state && Array.isArray(state.booked) && state.booked.length) ? state.booked[state.booked.length - 1] : null;
+        if (!base) { const up = await upcomingSlotsFor(stD.id, 1); base = up[0] || null; }
+        if (base) { baseDate = String(base.date).substring(0, 10); t1 = String(base.time).substring(0, 5); }
+      }
+      if (!baseDate || !t1) {
+        await sendWA(from, `Para una clase *doble* dime el día y la hora, por ej. *miércoles 9:30 doble*. 🚗`);
         done(); return;
       }
-      const t1 = String(base.time).substring(0, 5);
-      const t2 = addMinutes(t1, SLOT_MIN);                       // media hora siguiente
-      if (await isSlotFree(profIdD, base.date, t2)) {
-        const saved = await bookSlot(stD.id, stD.name, profIdD, { date: base.date, time: t2, dayName: base.dayName }, stD.vehicleType);
-        if (saved) {
+      const t2 = addMinutes(t1, SLOT_MIN);
+      const dayName = DAY_LABELS[new Date(baseDate + 'T12:00:00').getDay()];
+      // t1 puede ser ya una clase del propio alumno (dobla sobre ella)
+      const mis = await upcomingSlotsFor(stD.id, 30);
+      const tieneT1 = mis.some(s => String(s.date).substring(0,10) === baseDate && String(s.time).substring(0,5) === t1);
+      const t1ok = tieneT1 || (await isSlotFree(profIdD, baseDate, t1));
+      const t2ok = await isSlotFree(profIdD, baseDate, t2);
+      if (t1ok && t2ok) {
+        let ok = true;
+        if (!tieneT1) { const s1 = await bookSlot(stD.id, stD.name, profIdD, { date: baseDate, time: t1, dayName }, stD.vehicleType); ok = !!s1; }
+        if (ok) { const s2 = await bookSlot(stD.id, stD.name, profIdD, { date: baseDate, time: t2, dayName }, stD.vehicleType); ok = !!s2; }
+        if (ok) {
           const resumen = await listaClasesAlumno(stD.id);
           await sendWA(from,
-            `✅ ¡Hecho! Clase *doble* (90 min): *${base.dayName || formatDate(base.date)} de ${t1} a ${addMinutes(t2, SLOT_MIN)}*.\n\n` +
+            `✅ ¡Hecho! Clase *doble* (90 min): *${dayName} ${formatDate(baseDate)} de ${t1} a ${addMinutes(t2, SLOT_MIN)}*.\n\n` +
             `📋 *Tus clases:*\n${resumen}`);
           done(); return;
         }
       }
       await sendWA(from,
-        `Para doblar la clase necesito la media hora siguiente (${t2}) libre, y ahora está ocupada o fuera de horario. 😕\n` +
-        `Dime otra hora y te reservo *dos seguidas*. 🚗`);
+        `Para la *doble* del ${dayName} ${formatDate(baseDate)} necesito *${t1}* y *${t2}* libres seguidas, y ahora mismo no lo están. 😕\n` +
+        `Dime otro día u hora (por ej. *${dayName.toLowerCase()} 9:30 doble*) y te reservo las dos seguidas. 🚗`);
       done(); return;
     }
   }
