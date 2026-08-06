@@ -544,6 +544,13 @@ function nextWeekDates() {
   });
 }
 
+// Última fecha (sábado) de la semana que viene. Tope para NO proponer clases
+// más allá de una sola semana.
+function nextWeekLastDate() {
+  const w = nextWeekDates();
+  return w[w.length - 1].date;
+}
+
 function formatDate(dateStr) {
   const [, m, d] = String(dateStr).substring(0, 10).split('-');
   return `${parseInt(d)} de ${MONTH_NAMES[parseInt(m) - 1]}`;
@@ -636,7 +643,7 @@ function pedroVehConflict(slots, date, time, bookerVeh, vehOf, dur = SLOT_MIN) {
   });
 }
 
-async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null, bookerVehType = null) {
+async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = null, bookerVehType = null, untilDate = null) {
   // Una sola ronda de consultas en paralelo (antes: una por día/hora → lento)
   const [slots, examDays, avail, blocked] = await Promise.all([
     loadSlots(), loadExamDays(), loadAvailability(), loadBlocked(),
@@ -655,6 +662,7 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
     const dow  = dt.getDay();
     if (dow === 0) continue; // sin domingos
     const date  = ymdLocal(dt);
+    if (untilDate && date > untilDate) break; // no proponer más allá de la semana tope
     if (examDays.includes(date)) continue; // día de examen: sin clases
     // Horario de pista: si el alumno es de pista, solo estas horas ese día
     const pistaDia = pistaHours ? (pistaHours[DAY_KEY_MAP[dow]] || []) : null;
@@ -996,6 +1004,16 @@ function dayMenuMessage(day, prefix = '') {
          `Para ver otro día escribe *otro día*; cuando termines, *listo*.`;
 }
 
+// Resumen de TODOS los días con hueco (cuando el alumno ya los ha visto todos).
+// Evita el bucle de "otro día" entre dos días: se le enseñan todos de golpe.
+function allDaysOverview(days) {
+  const bloques = days.map(d =>
+    `📅 *${d.dayName} ${formatDate(d.date)}*\n🕐 ${d.slots.map(s => s.time).join(' · ')}`
+  ).join('\n\n');
+  const ej = days[0].slots[0].time;
+  return `${bloques}\n\nResponde con el día y la hora que quieras (por ej. *${days[0].dayName} ${ej}*). Cuando termines, *listo*.`;
+}
+
 // Filtro de horas de pista para un alumno según su fase
 // Carnets que NO tienen examen de pista (según la tabla DGT de la autoescuela):
 // su fase siempre es circulación, nunca se limita a horas de pista.
@@ -1057,7 +1075,7 @@ async function sendBookingRequests(force = false) {
 
     const profId = st.profId ?? st.prof_id;
     const pistaHours = await pistaFilterFor(st);
-    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours, st.vehicleType);
+    const free = await nextFreeSlots(profId, 8, nextMon, pistaHours, st.vehicleType, nextWeekLastDate());
     if (!free.length) {
       await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Contacta con la autoescuela.`);
       continue;
@@ -1432,7 +1450,7 @@ app.post('/bot', async (req, res) => {
 
     const nextMon = ymdLocal(nextWeekMonday());
     const pistaHours = await pistaFilterFor(st);
-    const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType);
+    const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType, nextWeekLastDate());
     if (!free.length) {
       await sendWA(from, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Llama a la autoescuela.`);
       done();
@@ -1518,7 +1536,7 @@ app.post('/bot', async (req, res) => {
 
     // Huecos libres actuales, agrupados por día (excluyendo los ya reservados)
     const bookedDates = (state.booked || []).map(b => b.date);
-    const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType);
+    const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType, nextWeekLastDate());
     const days = daysWithSlots(allFree, bookedDates);
 
     if (!days.length) {
@@ -1532,11 +1550,24 @@ app.post('/bot', async (req, res) => {
 
     const { dow, hour } = parseBookingText(body);
 
-    // "otro día" / "no" → pasar al siguiente día con huecos
+    // "otro día" / "no" → AVANZAR al siguiente día con huecos (por orden).
+    // Antes solo se saltaba el día actual → hacía ping-pong entre 2 días.
+    // Ahora avanza por índice; cuando ya se han visto todos, se enseñan todos
+    // los días de golpe y se avisa de que no hay más.
     if (!hour && (isNo(body) || /siguiente|otro dia|proxim|otra fecha|mas dias/.test(norm(body)))) {
-      const next = days.find(d => d.date !== state.currentDate) || days[0];
-      state.currentDate = next.date;
-      await sendWA(from, dayMenuMessage(next, 'De acuerdo. '));
+      const idx = days.findIndex(d => d.date === state.currentDate);
+      if (idx >= 0 && idx + 1 < days.length) {
+        const next = days[idx + 1];
+        state.currentDate = next.date;
+        await sendWA(from, dayMenuMessage(next, 'De acuerdo. '));
+      } else if (days.length === 1) {
+        state.currentDate = days[0].date;
+        await sendWA(from, `Solo queda ese día con hueco esta semana 🗓️\n\n` + dayMenuMessage(days[0], ''));
+      } else {
+        // Ya los ha visto todos: resumen completo, sin volver a empezar el bucle
+        state.currentDate = days[0].date;
+        await sendWA(from, `Esos son todos los días con hueco de la semana que viene 🗓️\n\n` + allDaysOverview(days));
+      }
       done();
       return;
     }
@@ -1572,7 +1603,7 @@ app.post('/bot', async (req, res) => {
         if (!saved) {
           // El hueco se ocupó entre la comprobación y el guardado (o error de
           // BD): NO confirmamos. Refrescamos huecos reales y re-ofrecemos.
-          const freshFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType);
+          const freshFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType, nextWeekLastDate());
           const freshDays = daysWithSlots(freshFree, (state.booked || []).map(b => b.date));
           if (!freshDays.length) {
             delete pending[from];
@@ -1841,7 +1872,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   const profId = st.profId ?? st.prof_id;
   const nextMon = ymdLocal(nextWeekMonday());
   const pistaHours = await pistaFilterFor(st);
-  const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType);
+  const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType, nextWeekLastDate());
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
   const day0 = daysWithSlots(free)[0];
