@@ -1509,65 +1509,97 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const exportSchedule=()=>{
     const profsToExport=vProf==='all'?professors:professors.filter(p=>p.id===vProf);
     const weekLabel=`${week[0].toLocaleDateString('es-ES',{day:'numeric',month:'short'})} – ${week[5].toLocaleDateString('es-ES',{day:'numeric',month:'short',year:'numeric'})}`;
+    const genLabel=new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
     const DAY_FULL=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+    const dayKeys=week.map(d=>ymd(d));
+    const examCol=dayKeys.map(ds=>examDays.includes(ds));
+    const vehBadge=vt=>vt==='automatico'
+        ?'<span style="background:#7c3aed;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;-webkit-print-color-adjust:exact;print-color-adjust:exact">AUT</span>'
+       :vt==='moto'?'<span style="font-size:11px;margin-left:4px">🛵</span>'
+       :vt==='camion'?'<span style="font-size:11px;margin-left:4px">🚛</span>':'';
 
     const tables=profsToExport.map(prof=>{
-      const rows=TIME_SLOTS.map(time=>{
-        const cells=week.map((d,di)=>{
-          const ds=ymd(d);
-          const isExam=examDays.includes(ds);
-          if(isExam) return `<td style="background:#fff7ed;text-align:center;font-size:11px;color:#c2410c;">📝 Examen</td>`;
-          const s=Object.values(slots).filter(sl=>sl.date===ds&&sl.time===time&&sl.profId===prof.id);
-          if(!s.length) return `<td></td>`;
-          return s.map(sl=>{
+      // Clases reales de este profesor esta semana (sin canceladas ni huecos vacíos)
+      const profSlots=Object.values(slots).filter(sl=>
+        sl.profId===prof.id && sl.studentId && sl.status!=='cancelled' && dayKeys.includes(sl.date));
+      // Solo las filas de hora con alguna clase → hoja compacta (no 60 filas vacías)
+      const activeTimes=TIME_SLOTS.filter(t=>profSlots.some(sl=>sl.time===t));
+
+      const header=`
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #1e3a5f;padding-bottom:10px;margin-bottom:14px">
+          <div>
+            <div style="font-size:22px;font-weight:800;color:#091426;letter-spacing:-.3px">Horario — ${prof.name}</div>
+            <div style="font-size:13px;color:#475569;margin-top:3px">Semana del ${weekLabel}</div>
+          </div>
+          <div style="font-size:11px;color:#94a3b8;text-align:right">Generado el ${genLabel}</div>
+        </div>`;
+
+      if(!activeTimes.length){
+        return `<div class="page">${header}
+          <div style="padding:44px;text-align:center;color:#94a3b8;font-size:14px;border:1px dashed #cbd5e1;border-radius:10px">
+            Sin clases programadas esta semana.
+          </div></div>`;
+      }
+
+      const headCells=DAY_FULL.map((d,i)=>`
+        <th style="padding:7px 8px;text-align:left;font-size:12px;background:#f1f5f9;width:15%;border:1px solid #e2e8f0">
+          <div style="text-transform:uppercase;letter-spacing:.4px;font-size:10px;color:#64748b">${d}</div>
+          <div style="font-size:15px;font-weight:800;color:#091426">${week[i].getDate()}</div>
+          ${examCol[i]?'<div style="font-size:9px;font-weight:700;color:#c2410c;background:#ffedd5;border-radius:4px;padding:1px 5px;display:inline-block;margin-top:2px;-webkit-print-color-adjust:exact;print-color-adjust:exact">📝 EXAMEN</div>':''}
+        </th>`).join('');
+
+      const rows=activeTimes.map(time=>{
+        const cells=dayKeys.map((ds,di)=>{
+          const daySl=profSlots.filter(sl=>sl.date===ds&&sl.time===time);
+          if(!daySl.length)
+            return `<td style="border:1px solid #e2e8f0;padding:3px;vertical-align:top${examCol[di]?';background:#fff7ed':''}"></td>`;
+          const boxes=daySl.map(sl=>{
             const stu=students.find(x=>x.id===sl.studentId);
             const label=stu?.name||'?';
             const vt=stu?.vehicleType||'manual';
-            const badge=vt==='automatico'?'<span style="background:#a855f7;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">A</span>':
-                         vt==='moto'?'<span style="font-size:10px;margin-left:3px">🛵</span>':
-                         vt==='camion'?'<span style="font-size:10px;margin-left:3px">🚛</span>':'';
             const dur=sl.duration||(stu?calcDuration(sl.profId,sl.date,sl.time,stu.vehicleType,slots):45);
-            return `<div style="background:${sl.slotType==='examen'?'#581c87':'#1e3a8a'};color:#fff;border-radius:4px;padding:3px 6px;margin-bottom:2px;font-size:11px">
-              <b>${label}</b>${badge} <span style="float:right;opacity:.7">${dur}′</span>
+            const bg=sl.slotType==='examen'?'#581c87':'#1e3a8a';
+            return `<div style="background:${bg};color:#fff;border-radius:5px;padding:4px 7px;margin-bottom:3px;font-size:11px;display:flex;justify-content:space-between;align-items:flex-start;gap:6px;-webkit-print-color-adjust:exact;print-color-adjust:exact">
+              <span style="font-weight:700;line-height:1.25;word-break:break-word">${label}${vehBadge(vt)}</span>
+              <span style="opacity:.75;white-space:nowrap;font-variant-numeric:tabular-nums">${dur}′</span>
             </div>`;
           }).join('');
-        });
-        return `<tr><td style="color:#64748b;font-size:11px;white-space:nowrap;padding:3px 8px">${time}</td>${cells.map(c=>`<td style="vertical-align:top;padding:2px;min-width:110px">${c}</td>`).join('')}</tr>`;
+          return `<td style="border:1px solid #e2e8f0;padding:3px;vertical-align:top">${boxes}</td>`;
+        }).join('');
+        return `<tr>
+          <td style="border:1px solid #e2e8f0;color:#475569;font-size:11px;font-weight:600;white-space:nowrap;padding:4px 9px;text-align:right;background:#f8fafc;vertical-align:middle;font-variant-numeric:tabular-nums;-webkit-print-color-adjust:exact;print-color-adjust:exact">${time}</td>
+          ${cells}
+        </tr>`;
       }).join('');
 
-      return `
-        <div style="page-break-after:always;padding:24px">
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #1e3a5f;padding-bottom:10px;margin-bottom:16px">
-            <div>
-              <div style="font-size:20px;font-weight:800;color:#091426">Horario — ${prof.name}</div>
-              <div style="font-size:13px;color:#64748b;margin-top:2px">Semana del ${weekLabel}</div>
-            </div>
-            <div style="font-size:11px;color:#94a3b8">Generado el ${new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>
-          </div>
-          <table style="width:100%;border-collapse:collapse;font-family:system-ui,sans-serif">
-            <thead>
-              <tr style="background:#f8faff">
-                <th style="padding:6px 8px;font-size:11px;color:#94a3b8;width:54px"></th>
-                ${DAY_FULL.map((d,i)=>`<th style="padding:6px 8px;text-align:left;font-size:12px;color:#475569;border-bottom:1px solid #e2e8f0">
-                  ${d}<br><span style="font-size:14px;font-weight:800;color:#091426">${week[i].getDate()}</span>
-                </th>`).join('')}
-              </tr>
-            </thead>
-            <tbody style="border-top:1px solid #e2e8f0">
-              ${rows}
-            </tbody>
-          </table>
-        </div>`;
+      return `<div class="page">
+        ${header}
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+          <thead><tr>
+            <th style="padding:7px 8px;background:#f1f5f9;width:10%;border:1px solid #e2e8f0"></th>
+            ${headCells}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
     }).join('');
 
-    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Horario Semanal</title>
-      <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#fff;font-family:system-ui,sans-serif}
-      tr:hover{background:#f8faff}td{border-bottom:1px solid #f1f5f9}
-      @media print{@page{margin:12mm}}</style>
-      </head><body>${tables}
+    const html=`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Horario — ${profsToExport.length===1?profsToExport[0].name:'Semanal'}</title>
+      <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        html,body{background:#fff}
+        body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#0f172a;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+        .page{padding:22px 26px}
+        .page + .page{page-break-before:always}
+        table{border-collapse:collapse}
+        thead{display:table-header-group}
+        tr{break-inside:avoid;page-break-inside:avoid}
+        @media print{@page{size:A4 landscape;margin:11mm}}
+      </style></head><body>${tables||'<div class="page">Sin profesores.</div>'}
       <script>window.onload=()=>window.print()<\/script></body></html>`;
 
     const w=window.open('','_blank');
+    if(!w){alert('Permite las ventanas emergentes para poder exportar el horario.');return;}
     w.document.write(html);
     w.document.close();
   };
