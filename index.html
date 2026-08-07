@@ -3318,15 +3318,16 @@ function Horario({
     const DAY_FULL = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
     const dayKeys = week.map(d => ymd(d));
     const examCol = dayKeys.map(ds => examDays.includes(ds));
+    const filterLabel = fType === 'practica' ? ' · Solo prácticas' : fType === 'examen' ? ' · Solo exámenes' : '';
     const vehBadge = vt => vt === 'automatico' ? '<span style="background:#7c3aed;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;-webkit-print-color-adjust:exact;print-color-adjust:exact">AUT</span>' : vt === 'moto' ? '<span style="font-size:11px;margin-left:4px">🛵</span>' : vt === 'camion' ? '<span style="font-size:11px;margin-left:4px">🚛</span>' : '';
     const tables = profsToExport.map(prof => {
-      const profSlots = Object.values(slots).filter(sl => sl.profId === prof.id && sl.studentId && sl.status !== 'cancelled' && dayKeys.includes(sl.date));
+      const profSlots = Object.values(slots).filter(sl => sl.profId === prof.id && sl.studentId && sl.status !== 'cancelled' && dayKeys.includes(sl.date) && (fType === 'all' || sl.slotType === fType));
       const activeTimes = TIME_SLOTS.filter(t => profSlots.some(sl => sl.time === t));
       const header = `
         <div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #1e3a5f;padding-bottom:10px;margin-bottom:14px">
           <div>
             <div style="font-size:22px;font-weight:800;color:#091426;letter-spacing:-.3px">Horario — ${prof.name}</div>
-            <div style="font-size:13px;color:#475569;margin-top:3px">Semana del ${weekLabel}</div>
+            <div style="font-size:13px;color:#475569;margin-top:3px">Semana del ${weekLabel}${filterLabel}</div>
           </div>
           <div style="font-size:11px;color:#94a3b8;text-align:right">Generado el ${genLabel}</div>
         </div>`;
