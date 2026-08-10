@@ -30,6 +30,19 @@ if (USE_SUPABASE) {
 
 const SCHOOL_ID = process.env.SCHOOL_ID || null;
 
+// ── Cancelaciones: las gestiona la OFICINA, no el bot ──────
+// Decisión de la autoescuela: el alumno NO cancela desde el chat. Cuando pide
+// cancelar (o responde que no puede venir al recordatorio), el bot no toca la
+// agenda: le da el móvil de la oficina para que lo gestionen allí.
+const OFFICE_PHONE = process.env.OFFICE_PHONE || '684 632 975';
+function cancelRedirectMsg(name) {
+  return (
+    `Hola${name ? ' ' + name : ''} 👋 Las cancelaciones y los cambios los gestiona directamente la oficina.\n\n` +
+    `📞 Escribe o llama al *${OFFICE_PHONE}* y te atienden para cancelar tu clase.\n\n` +
+    `_Yo no puedo anularla desde aquí, así que tu clase sigue reservada hasta que hables con ellos._`
+  );
+}
+
 // ── Nombre de la escuela (leído de Supabase, con fallback) ──
 let SCHOOL_NAME = process.env.SCHOOL_NAME || 'Autoescuela Exit';
 async function refreshSchoolName() {
@@ -1171,8 +1184,8 @@ async function sendReminders() {
     const msg =
       `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
       `Hola ${st.name}, tienes clase el *${cita}*.\n\n` +
-      `Si no puedes venir, responde *CANCELAR*.\n` +
-      `Si no respondes, la clase se mantiene. ✅`;
+      `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
+      `Si no dices nada, la clase se mantiene. ✅`;
 
     await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
     await updateSlot(slot.id, { reminderSent: true });
@@ -1356,37 +1369,16 @@ app.post('/bot', async (req, res) => {
 
   let state = pending[from];
 
-  // ── Cancelación GLOBAL (prioritaria) ──────────────────
-  // Funciona AUNQUE el alumno esté a mitad de otra conversación (antes solo se
-  // detectaba sin conversación abierta, por eso "anular la clase del jueves"
-  // durante una reserva se ignoraba). Entiende cancelar/anular/quitar y, si
-  // menciona un día ("la del jueves"), cancela esa clase directamente.
-  if ((!state || state.type !== 'cancel') && /(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
+  // ── Cancelación → la gestiona la OFICINA ──────────────
+  // El bot NO cancela ninguna clase. Detecta la intención (cancelar/anular/
+  // quitar) y deriva al móvil de la oficina. Funciona aunque el alumno esté a
+  // mitad de otra conversación: se cierra el hilo abierto para no dejarlo
+  // colgado y que el siguiente "hola" empiece limpio.
+  if (/(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
     const stC = (await loadStudents()).find(s => s.phone === from && s.active);
-    if (stC) {
-      const mine = await upcomingSlotsFor(stC.id);
-      if (!mine.length) {
-        await sendWA(from, `No tienes clases reservadas que cancelar 👍`);
-        done(); return;
-      }
-      const profIdC = stC.profId ?? stC.prof_id;
-      const { dow } = parseBookingText(body);
-      const delDia = dow ? mine.filter(s => new Date(String(s.date).substring(0,10) + 'T12:00:00').getDay() === dow) : [];
-      if (delDia.length === 1) {                       // un solo candidato ese día → cancelar ya
-        await updateSlot(delDia[0].id, { status: 'cancelled' });
-        delete pending[from];
-        await sendWA(from, `❌ Clase cancelada: *${slotLabel(delDia[0])}*\n\nSi quieres otra, escríbeme *hola*. 👋`);
-        await notifyProf(profIdC, `❌ *Clase cancelada por el alumno*\n👤 ${stC.name}\n📅 ${slotLabel(delDia[0])}`);
-        done(); return;
-      }
-      const lista = delDia.length ? delDia : mine;     // varias o sin día → pedir número
-      pending[from] = { type: 'cancel', studentId: stC.id, studentName: stC.name, profId: profIdC, slots: lista, expires: Date.now() + 3600000 };
-      await sendWA(from,
-        `Estas son tus clases${delDia.length ? ' de ese día' : ''}:\n\n` +
-        lista.map((s, i) => `*${i + 1}.* ${slotLabel(s)}`).join('\n') +
-        `\n\n¿Cuál quieres cancelar? Responde con el número, o *listo* para salir.`);
-      done(); return;
-    }
+    if (pending[from]) delete pending[from];
+    await sendWA(from, cancelRedirectMsg(stC ? stC.name : ''));
+    done(); return;
   }
 
   // ── Clase DOBLE: el alumno quiere 90 min = dos clases seguidas de 45 ──
@@ -1463,37 +1455,15 @@ app.post('/bot', async (req, res) => {
         await sendWA(from,
           `📋 *Tus próximas clases:*\n` +
           mine.map(s => `• ${slotLabel(s)}`).join('\n') +
-          `\n\nSi quieres anular alguna, responde *cancelar*.`
+          `\n\nPara anular o cambiar alguna, escribe o llama a la oficina: *${OFFICE_PHONE}*.`
         );
       }
       done();
       return;
     }
 
-    // ── "cancelar": anular una clase reservada ──
-    if (/cancel|anula/.test(t0)) {
-      const mine = await upcomingSlotsFor(st.id);
-      if (!mine.length) {
-        await sendWA(from, `No tienes clases reservadas que cancelar 👍`);
-        done();
-        return;
-      }
-      pending[from] = {
-        type:        'cancel',
-        studentId:   st.id,
-        studentName: st.name,
-        profId:      profId,
-        slots:       mine,
-        expires:     Date.now() + 3600000, // 1h para decidir
-      };
-      await sendWA(from,
-        `Estas son tus próximas clases:\n\n` +
-        mine.map((s, i) => `*${i + 1}.* ${slotLabel(s)}`).join('\n') +
-        `\n\n¿Cuál quieres cancelar? Responde con el número, o *listo* para salir.`
-      );
-      done();
-      return;
-    }
+    // Nota: "cancelar/anular/quitar" ya se atiende antes, en el bloque de
+    // cancelación global, que deriva al móvil de la oficina. Aquí no hace falta.
 
     // Solo arrancamos la propuesta si el alumno REALMENTE quiere reservar.
     // Un "gracias/ok/perfecto" o un mensaje suelto no debe reproponer clases.
@@ -1535,41 +1505,25 @@ app.post('/bot', async (req, res) => {
     return;
   }
 
-  // ── FLUJO: Cancelación ────────────────────────────────
+  // ── FLUJO: Cancelación (heredado) ─────────────────────
+  // Ya no se crean estados de este tipo: las cancelaciones las gestiona la
+  // oficina. Se conserva para atender con sentido las conversaciones que
+  // quedaran abiertas desde antes del cambio, sin anular ninguna clase.
   if (state.type === 'cancel') {
-    if (isDone(body) || isNo(body)) {
-      delete pending[from];
-      await sendWA(from, `De acuerdo, no cancelo nada. ¡Hasta pronto! 👋`);
-      done();
-      return;
-    }
-    const n = parseInt(norm(body), 10);
-    if (n >= 1 && n <= state.slots.length) {
-      const s = state.slots[n - 1];
-      await updateSlot(s.id, { status: 'cancelled' });
-      delete pending[from];
-      await sendWA(from, `❌ Clase cancelada: *${slotLabel(s)}*\n\nSi quieres recuperar el hueco otro día, escríbeme *hola*. 👋`);
-      await notifyProf(state.profId,
-        `❌ *Clase cancelada por el alumno*\n👤 ${state.studentName}\n📅 ${slotLabel(s)}`
-      );
-    } else {
-      await sendWA(from, `Responde con el número de la clase (1-${state.slots.length}), o *listo* para salir.`);
-    }
+    delete pending[from];
+    await sendWA(from, cancelRedirectMsg(state.studentName));
     done();
     return;
   }
 
   // ── FLUJO: Recordatorio ───────────────────────────────
   if (state.type === 'reminder') {
-    if (isNo(body) || norm(body) === 'cancelar') {
-      const slot = await updateSlot(state.slotId, { status: 'cancelled' });
-      delete pending[from];
-      await sendWA(from, `Entendido ${state.studentName}, clase cancelada. ¡Hasta la próxima! 👋`);
-      await notifyProf(state.profId,
-        `❌ *Clase cancelada*\n👤 ${state.studentName}\n📅 ${slot?.dayName || ''} ${slot?.date || ''} a las ${slot?.time || ''}h`
-      );
+    delete pending[from];
+    if (isNo(body) || /(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
+      // El bot NO anula: la clase sigue reservada hasta que lo gestione la
+      // oficina. Así el profesor nunca se queda con un hueco fantasma.
+      await sendWA(from, cancelRedirectMsg(state.studentName));
     } else {
-      delete pending[from];
       await sendWA(from, `¡Perfecto! Te esperamos. 🚗`);
     }
     done();
@@ -1972,8 +1926,8 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
   const msg =
     `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
     `Hola ${st.name}, tienes clase el *${cita}*.\n\n` +
-    `Si no puedes venir, responde *CANCELAR*.\n` +
-    `Si no respondes, la clase se mantiene. ✅`;
+    `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
+    `Si no dices nada, la clase se mantiene. ✅`;
 
   await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
   await updateSlot(slot.id, { reminderSent: true });
@@ -2026,10 +1980,18 @@ app.post('/api/notify-move', async (req, res) => {
     if (st) { to = st.phone; name = name || st.name; }
   }
   if (!to) return res.status(400).json({ error: 'Falta el teléfono del alumno' });
-  const citaOf = (dayName, date, time) =>
-    `${dayName || (date ? formatDate(date) : '')}${time ? ' a las ' + String(time).substring(0,5) + 'h' : ''}`.trim();
-  const citaVieja = citaOf(b.oldDayName, b.oldDate, b.oldTime) || 'tu clase';
-  const citaNueva = citaOf(b.newDayName, b.newDate, b.newTime) || 'una nueva hora';
+  // La cita indica SIEMPRE inicio y fin. Es lo que hace que una clase doble
+  // (90 min) se entienda: "de 11:00 a 12:30" en vez de solo "a las 11:00".
+  // El fin llega del CRM (oldEnd/newEnd) o se calcula con la duración.
+  const citaOf = (dayName, date, time, end, dur) => {
+    const dia = dayName || (date ? formatDate(date) : '');
+    const ini = time ? String(time).substring(0, 5) : '';
+    if (!ini) return dia.trim();
+    const fin = end ? String(end).substring(0, 5) : addMinutes(ini, Number(dur) || SLOT_MIN);
+    return `${dia} de ${ini} a ${fin}`.trim();
+  };
+  const citaVieja = citaOf(b.oldDayName, b.oldDate, b.oldTime, b.oldEnd, b.oldDuration) || 'tu clase';
+  const citaNueva = citaOf(b.newDayName, b.newDate, b.newTime, b.newEnd, b.newDuration) || 'una nueva hora';
   const msg =
     `🔄 *Cambio de horario — ${SCHOOL_NAME}*\n\n` +
     `Hola ${name || ''}, tu clase del *${citaVieja}* se ha *movido*.\n` +

@@ -1432,17 +1432,49 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     }catch(e){/* si el bot no responde, la clase se borra igual */}
   };
   // Avisa al alumno de que su clase se ha MOVIDO a otra hora/día.
-  const notifyMove=async(sl,newDate,newTime)=>{
-    if(!sl||!sl.studentId)return;
-    const stu=students.find(s=>s.id===sl.studentId);
+  // ── Clases dobles ────────────────────────────────────────────────────────
+  // Una clase doble (90 min) NO es un registro: son dos clases de 45 pegadas
+  // del mismo alumno. Aquí se reconstruye ese bloque a partir de una de ellas,
+  // para poder moverlo entero y avisar de la hora real de inicio y de fin.
+  const minToHHMM=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+  const blockOf=sl=>{
+    if(!sl||!sl.studentId)return sl?[sl]:[];
+    const same=Object.values(slots).filter(s=>s.id!==sl.id&&s.studentId===sl.studentId
+      &&s.profId===sl.profId&&s.date===sl.date&&s.slotType===sl.slotType);
+    const chain=[sl];
+    for(;;){ // hacia atrás: una clase que termine justo donde empieza la primera
+      const ini=hhmmToMin(chain[0].time);
+      const prev=same.find(s=>!chain.includes(s)&&hhmmToMin(s.time)+(s.duration||45)===ini);
+      if(!prev)break; chain.unshift(prev);
+    }
+    for(;;){ // hacia delante: una clase que empiece justo donde acaba la última
+      const last=chain[chain.length-1];
+      const fin=hhmmToMin(last.time)+(last.duration||45);
+      const next=same.find(s=>!chain.includes(s)&&hhmmToMin(s.time)===fin);
+      if(!next)break; chain.push(next);
+    }
+    return chain;
+  };
+  // Aviso de cambio de horario: envía SIEMPRE inicio y fin, de forma que una
+  // clase doble se comunique como "de 11:00 a 12:30" y no como dos avisos.
+  const notifyMove=async(chain,newDate,newTimes)=>{
+    const first=chain&&chain[0];
+    if(!first||!first.studentId)return;
+    const stu=students.find(s=>s.id===first.studentId);
     const url=(loadSchool().botUrl||'').replace(/\/$/,'');
     if(!stu||!url)return;
     const dn=d=>new Date(d+'T12:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+    const last=chain[chain.length-1];
+    const durLast=last.duration||45;
+    const oldTime=String(first.time).substring(0,5);
+    const oldEnd=minToHHMM(hhmmToMin(last.time)+durLast);
+    const newTime=newTimes[0];
+    const newEnd=minToHHMM(hhmmToMin(newTimes[newTimes.length-1])+durLast);
     try{
       await fetch(`${url}/api/notify-move`,{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({studentId:stu.id,name:stu.name,
-          oldDate:sl.date,oldTime:sl.time,oldDayName:dn(sl.date),
-          newDate,newTime,newDayName:dn(newDate)}),
+          oldDate:first.date,oldTime,oldEnd,oldDayName:dn(first.date),
+          newDate,newTime,newEnd,newDayName:dn(newDate)}),
         signal:AbortSignal.timeout(6000)});
     }catch(e){/* si el bot no responde, la clase se mueve igual */}
   };
@@ -1460,18 +1492,41 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const moveSlot=(slotId,date,time,profId)=>{
     const sl=slots[slotId]; if(!sl)return;
     if(sl.date===date&&sl.time===time&&sl.profId===profId)return;
-    if(wouldClash(slots,slotId,profId,date,time,sl.duration||45)){
-      alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');return;
+    // Si es una clase doble, se mueve el bloque ENTERO manteniendo las dos
+    // mitades seguidas: antes se arrastraba solo una y la clase quedaba partida.
+    const chain=blockOf(sl);
+    const desfase=hhmmToMin(time)-hhmmToMin(sl.time);
+    const movidas=chain.map(s=>({...s,_newTime:minToHHMM(hhmmToMin(s.time)+desfase)}));
+    // El solape se comprueba contra las clases que NO son de este bloque
+    const idsBloque=new Set(chain.map(s=>s.id));
+    const resto={};Object.values(slots).forEach(s=>{if(!idsBloque.has(s.id))resto[s.id]=s;});
+    for(const m of movidas){
+      const min=hhmmToMin(m._newTime);
+      if(min<0||min+(m.duration||45)>24*60){
+        alert('⚠️ La clase no cabe a esa hora.');return;
+      }
+      if(wouldClash(resto,m.id,profId,date,m._newTime,m.duration||45)){
+        alert(chain.length>1
+          ? '⚠️ La clase doble no cabe ahí: alguna de sus dos horas se solapa con otra clase del profesor.'
+          : '⚠️ Esa hora se solapa con otra clase de ese profesor.');
+        return;
+      }
     }
     if(sl.studentId){
       const stu=students.find(s=>s.id===sl.studentId);
-      if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que su clase se mueve a otra hora?`)) notifyMove(sl,date,time);
+      const dobleTxt=chain.length>1?` (clase doble de ${chain.reduce((a,s)=>a+(s.duration||45),0)} min)`:'';
+      if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que su clase${dobleTxt} se mueve a otra hora?`))
+        notifyMove(chain,date,movidas.map(m=>m._newTime));
     }
     pushUndo();
     setSlots(ss=>{
       const n={...ss};
-      if(sl.fromBot){ n[slotId]={...sl,date,time,profId}; }
-      else { delete n[slotId]; const nid=`slot_${Date.now()}_${Math.random().toString(36).slice(2,6)}`; n[nid]={...sl,id:nid,date,time,profId}; }
+      movidas.forEach((m,i)=>{
+        const orig=n[m.id]; if(!orig)return;
+        const nuevo={...orig,date,time:m._newTime,profId};
+        if(orig.fromBot){ n[m.id]=nuevo; }
+        else { delete n[m.id]; const nid=`slot_${Date.now()}_${i}_${Math.random().toString(36).slice(2,6)}`; n[nid]={...nuevo,id:nid}; }
+      });
       return n;
     });
   };

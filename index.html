@@ -3152,9 +3152,30 @@ function Horario({
       });
     } catch (e) {}
   };
-  const notifyMove = async (sl, newDate, newTime) => {
-    if (!sl || !sl.studentId) return;
-    const stu = students.find(s => s.id === sl.studentId);
+  const minToHHMM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const blockOf = sl => {
+    if (!sl || !sl.studentId) return sl ? [sl] : [];
+    const same = Object.values(slots).filter(s => s.id !== sl.id && s.studentId === sl.studentId && s.profId === sl.profId && s.date === sl.date && s.slotType === sl.slotType);
+    const chain = [sl];
+    for (;;) {
+      const ini = hhmmToMin(chain[0].time);
+      const prev = same.find(s => !chain.includes(s) && hhmmToMin(s.time) + (s.duration || 45) === ini);
+      if (!prev) break;
+      chain.unshift(prev);
+    }
+    for (;;) {
+      const last = chain[chain.length - 1];
+      const fin = hhmmToMin(last.time) + (last.duration || 45);
+      const next = same.find(s => !chain.includes(s) && hhmmToMin(s.time) === fin);
+      if (!next) break;
+      chain.push(next);
+    }
+    return chain;
+  };
+  const notifyMove = async (chain, newDate, newTimes) => {
+    const first = chain && chain[0];
+    if (!first || !first.studentId) return;
+    const stu = students.find(s => s.id === first.studentId);
     const url = (loadSchool().botUrl || '').replace(/\/$/, '');
     if (!stu || !url) return;
     const dn = d => new Date(d + 'T12:00:00').toLocaleDateString('es-ES', {
@@ -3162,6 +3183,12 @@ function Horario({
       day: 'numeric',
       month: 'long'
     });
+    const last = chain[chain.length - 1];
+    const durLast = last.duration || 45;
+    const oldTime = String(first.time).substring(0, 5);
+    const oldEnd = minToHHMM(hhmmToMin(last.time) + durLast);
+    const newTime = newTimes[0];
+    const newEnd = minToHHMM(hhmmToMin(newTimes[newTimes.length - 1]) + durLast);
     try {
       await fetch(`${url}/api/notify-move`, {
         method: 'POST',
@@ -3171,11 +3198,13 @@ function Horario({
         body: JSON.stringify({
           studentId: stu.id,
           name: stu.name,
-          oldDate: sl.date,
-          oldTime: sl.time,
-          oldDayName: dn(sl.date),
+          oldDate: first.date,
+          oldTime,
+          oldEnd,
+          oldDayName: dn(first.date),
           newDate,
           newTime,
+          newEnd,
           newDayName: dn(newDate)
         }),
         signal: AbortSignal.timeout(6000)
@@ -3202,37 +3231,58 @@ function Horario({
     const sl = slots[slotId];
     if (!sl) return;
     if (sl.date === date && sl.time === time && sl.profId === profId) return;
-    if (wouldClash(slots, slotId, profId, date, time, sl.duration || 45)) {
-      alert('⚠️ Esa hora se solapa con otra clase de ese profesor.');
-      return;
+    const chain = blockOf(sl);
+    const desfase = hhmmToMin(time) - hhmmToMin(sl.time);
+    const movidas = chain.map(s => ({
+      ...s,
+      _newTime: minToHHMM(hhmmToMin(s.time) + desfase)
+    }));
+    const idsBloque = new Set(chain.map(s => s.id));
+    const resto = {};
+    Object.values(slots).forEach(s => {
+      if (!idsBloque.has(s.id)) resto[s.id] = s;
+    });
+    for (const m of movidas) {
+      const min = hhmmToMin(m._newTime);
+      if (min < 0 || min + (m.duration || 45) > 24 * 60) {
+        alert('⚠️ La clase no cabe a esa hora.');
+        return;
+      }
+      if (wouldClash(resto, m.id, profId, date, m._newTime, m.duration || 45)) {
+        alert(chain.length > 1 ? '⚠️ La clase doble no cabe ahí: alguna de sus dos horas se solapa con otra clase del profesor.' : '⚠️ Esa hora se solapa con otra clase de ese profesor.');
+        return;
+      }
     }
     if (sl.studentId) {
       const stu = students.find(s => s.id === sl.studentId);
-      if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que su clase se mueve a otra hora?`)) notifyMove(sl, date, time);
+      const dobleTxt = chain.length > 1 ? ` (clase doble de ${chain.reduce((a, s) => a + (s.duration || 45), 0)} min)` : '';
+      if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que su clase${dobleTxt} se mueve a otra hora?`)) notifyMove(chain, date, movidas.map(m => m._newTime));
     }
     pushUndo();
     setSlots(ss => {
       const n = {
         ...ss
       };
-      if (sl.fromBot) {
-        n[slotId] = {
-          ...sl,
+      movidas.forEach((m, i) => {
+        const orig = n[m.id];
+        if (!orig) return;
+        const nuevo = {
+          ...orig,
           date,
-          time,
+          time: m._newTime,
           profId
         };
-      } else {
-        delete n[slotId];
-        const nid = `slot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        n[nid] = {
-          ...sl,
-          id: nid,
-          date,
-          time,
-          profId
-        };
-      }
+        if (orig.fromBot) {
+          n[m.id] = nuevo;
+        } else {
+          delete n[m.id];
+          const nid = `slot_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`;
+          n[nid] = {
+            ...nuevo,
+            id: nid
+          };
+        }
+      });
       return n;
     });
   };
