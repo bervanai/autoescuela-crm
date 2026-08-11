@@ -1437,6 +1437,18 @@ app.post('/bot', async (req, res) => {
 
   let state = pending[from];
 
+  // Un recordatorio pendiente no debe "comerse" un saludo ni una petición de
+  // clase. Caso real: una alumna escribió "Hola" para reservar y el bot lo
+  // tomó como "sí, voy" y le contestó "¡Te esperamos!". Si el mensaje es un
+  // saludo o pide clase, se cierra el recordatorio (la clase sigue en pie) y
+  // se atiende como una conversación normal.
+  if (state && state.type === 'reminder' && !isNo(body)
+      && /\b(hola|buenas|reserv\w*|pedir|quiero|queria|querria|clases?)\b/.test(norm(body))
+      && !/(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
+    delete pending[from];
+    state = null;
+  }
+
   // ── Cancelación → la gestiona la OFICINA ──────────────
   // El bot NO cancela ninguna clase. Detecta la intención (cancelar/anular/
   // quitar) y deriva al móvil de la oficina. Funciona aunque el alumno esté a
