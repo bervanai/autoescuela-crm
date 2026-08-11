@@ -1437,6 +1437,18 @@ app.post('/bot', async (req, res) => {
 
   let state = pending[from];
 
+  // Un recordatorio pendiente no debe "comerse" un saludo ni una petición de
+  // clase. Caso real: una alumna escribió "Hola" para reservar y el bot lo
+  // tomó como "sí, voy" y le contestó "¡Te esperamos!". Si el mensaje es un
+  // saludo o pide clase, se cierra el recordatorio (la clase sigue en pie) y
+  // se atiende como una conversación normal.
+  if (state && state.type === 'reminder' && !isNo(body)
+      && /\b(hola|buenas|reserv\w*|pedir|quiero|queria|querria|clases?)\b/.test(norm(body))
+      && !/(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
+    delete pending[from];
+    state = null;
+  }
+
   // ── Cancelación → la gestiona la OFICINA ──────────────
   // El bot NO cancela ninguna clase. Detecta la intención (cancelar/anular/
   // quitar) y deriva al móvil de la oficina. Funciona aunque el alumno esté a
@@ -1536,7 +1548,13 @@ app.post('/bot', async (req, res) => {
     const t0 = norm(body);
 
     // ── "¿qué clases tengo?": consultar reservas ──
-    if (/\bclases?\b/.test(t0) && /(mis|ver|que|cuando|tengo)/.test(t0) && !/cancel|anula/.test(t0)) {
+    // Consulta "¿qué clases tengo?". Las palabras clave van con LÍMITE de
+    // palabra: sin él, "Quería pedir clase..." contenía "que" dentro de
+    // "quería" y se respondía con el listado en vez de ofrecer hora (caso
+    // real). Y si pide hora o día explícitos, es una reserva, no una consulta.
+    if (/\bclases?\b/.test(t0) && /\b(mis|ver|que|qué|cuando|cuándo|tengo)\b/.test(t0)
+        && !/cancel|anula/.test(t0)
+        && !/\b(pedir|reservar|coger|quiero|queria|querría|dame|apunta)\b/.test(t0)) {
       const mine = await upcomingSlotsFor(st.id);
       if (!mine.length) {
         await sendWA(from, `Hola ${st.name} 👋 No tienes clases reservadas ahora mismo. Escríbeme *hola* y organizamos tu semana.`);
