@@ -869,7 +869,7 @@ function parseBookingText(text) {
   // 11:45 · 11.45 · 11,45 · 11y45 · 11h45 · 1145
   // Ojo: "y"/"h" solo valen de separador SIN espacios. Con espacios, "19 y 20"
   // son dos DÍAS, no las 19:20 (era un fallo real).
-  const conMin = t.match(/\b(\d{1,2})\s*[:.]\s*(\d{2})\b/)
+  const conMin = t.match(/\b(\d{1,2})\s*[:.;]\s*(\d{2})\b/)
               || t.match(/\b(\d{1,2}),(\d{2})\b/)
               || t.match(/\b(\d{1,2})[yh](\d{2})\b/)
               || t.match(/\b(\d{2})(\d{2})\b(?!\d)/);
@@ -1454,7 +1454,13 @@ app.post('/bot', async (req, res) => {
   // quitar) y deriva al móvil de la oficina. Funciona aunque el alumno esté a
   // mitad de otra conversación: se cierra el hilo abierto para no dejarlo
   // colgado y que el siguiente "hola" empiece limpio.
-  if (/(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
+  // Incluye también CAMBIAR/MOVER una clase: es lo que más piden los alumnos
+  // ("cambiar clase jueves a las 14:45", "podemos moverla al martes?") y, como
+  // implica soltar la hora que ya tienen, lo gestiona la oficina igual que una
+  // cancelación. Ojo: "cambia" a secas NO entra aquí — eso significa
+  // "enséñame otro día" y lo atiende el flujo normal.
+  if (/(cancel\w*|anul\w*|quitar)/.test(norm(body)) ||
+      /\b(cambiar|cambiarla|cambio|mover|moverla|reprogram\w*|modificar)\b/.test(norm(body))) {
     const stC = (await loadStudents()).find(s => s.phone === from && s.active);
     // Solo se cierra el hilo si era una cancelación heredada. Si estaba
     // reservando, su conversación se MANTIENE: antes se borraba y el siguiente
@@ -1684,6 +1690,24 @@ app.post('/bot', async (req, res) => {
       await sendWA(from,
         `¡Perfecto ${state.studentName}! 👌\n\n📋 *Tus clases reservadas:*\n${resumen}\n\n` +
         `Te recordaremos cada una 48h antes. 🚗`);
+      done();
+      return;
+    }
+
+    // El alumno RECHAZA un día ("el jueves no puedo", "el lunes 17 no"). Antes
+    // se detectaba el día y se le enseñaba justo ese día que acababa de
+    // descartar. Si niega y no da hora, se pasa al siguiente día.
+    if (!hour && /\bno\b|no puedo|imposible|no me viene/.test(norm(body))) {
+      state.justBooked = false;
+      const idxN = days.findIndex(d => d.date === state.currentDate);
+      const sig = (idxN >= 0 && idxN + 1 < days.length) ? days[idxN + 1] : null;
+      if (sig) {
+        state.currentDate = sig.date;
+        await sendWA(from, dayMenuMessage(sig, 'De acuerdo, ese día no. '));
+      } else {
+        state.currentDate = days[0].date;
+        await sendWA(from, `Esos son todos los días con hueco de la semana que viene 🗓️\n\n` + allDaysOverview(days));
+      }
       done();
       return;
     }
