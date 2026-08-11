@@ -1536,7 +1536,13 @@ app.post('/bot', async (req, res) => {
     const t0 = norm(body);
 
     // ── "¿qué clases tengo?": consultar reservas ──
-    if (/\bclases?\b/.test(t0) && /(mis|ver|que|cuando|tengo)/.test(t0) && !/cancel|anula/.test(t0)) {
+    // Consulta "¿qué clases tengo?". Las palabras clave van con LÍMITE de
+    // palabra: sin él, "Quería pedir clase..." contenía "que" dentro de
+    // "quería" y se respondía con el listado en vez de ofrecer hora (caso
+    // real). Y si pide hora o día explícitos, es una reserva, no una consulta.
+    if (/\bclases?\b/.test(t0) && /\b(mis|ver|que|qué|cuando|cuándo|tengo)\b/.test(t0)
+        && !/cancel|anula/.test(t0)
+        && !/\b(pedir|reservar|coger|quiero|queria|querría|dame|apunta)\b/.test(t0)) {
       const mine = await upcomingSlotsFor(st.id);
       if (!mine.length) {
         await sendWA(from, `Hola ${st.name} 👋 No tienes clases reservadas ahora mismo. Escríbeme *hola* y organizamos tu semana.`);
