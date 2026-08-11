@@ -759,12 +759,20 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
 }
 
 async function isSlotFree(profId, date, time) {
-  const [slots, examDays, blocked] = await Promise.all([
-    loadSlots(), loadExamDays(), loadBlocked(),
+  const [slots, examDays, blocked, avail] = await Promise.all([
+    loadSlots(), loadExamDays(), loadBlocked(), loadAvailability(),
   ]);
-  if (examDays.includes(String(date).substring(0, 10))) return false;
-  if (isBlockedSlotSync(blocked, profId, date, String(time).substring(0, 5))) return false;
-  return !overlapsExisting(slots, profId, date, String(time).substring(0, 5));
+  const d10 = String(date).substring(0, 10);
+  const hh  = String(time).substring(0, 5);
+  if (examDays.includes(d10)) return false;
+  // El profesor tiene que TRABAJAR ese día a esa hora. Faltaba comprobarlo:
+  // las horas del flujo normal salen de nextFreeSlots (que sí lo respeta),
+  // pero la clase doble elige la hora por su cuenta y podía colarse fuera del
+  // horario del profesor (p. ej. doblar la última clase de la tarde).
+  const dow = new Date(d10 + 'T12:00:00').getDay();
+  if (!hoursForProfDaySync(avail, profId, dow).includes(hh)) return false;
+  if (isBlockedSlotSync(blocked, profId, d10, hh)) return false;
+  return !overlapsExisting(slots, profId, d10, hh);
 }
 
 // ── Próximas clases reservadas de un alumno (ordenadas) ──
@@ -1453,6 +1461,15 @@ app.post('/bot', async (req, res) => {
     if (stD) {
       const profIdD = stD.profId ?? stD.prof_id;
       const pb = parseBookingText(body);
+      // Una PREGUNTA sin día ni hora NO reserva. Caso real: un alumno escribió
+      // "pero es doble?" y el bot le reservó 45 minutos de más. Si la pregunta
+      // sí trae día u hora ("¿puedo una doble a las 12:00?") se atiende normal.
+      if (/\?/.test(body) && !pb.hour && pb.dom == null && pb.dow == null) {
+        await sendWA(from,
+          `Sí, puedo reservarte una clase *doble* (90 min seguidos) 👍\n` +
+          `Dime el día y la hora de inicio, por ejemplo *miércoles 9:30 doble*.`);
+        done(); return;
+      }
       let baseDate = null, t1 = null;
       if (pb.hour) {
         // El alumno dijo una hora concreta → esa es la 1ª media hora de la doble
@@ -1468,6 +1485,15 @@ app.post('/bot', async (req, res) => {
       }
       if (!baseDate || !t1) {
         await sendWA(from, `Para una clase *doble* dime el día y la hora, por ej. *miércoles 9:30 doble*. 🚗`);
+        done(); return;
+      }
+      // El mismo tope que el resto del bot: no se reserva más allá de la
+      // semana que viene. Este flujo se lo saltaba porque elige la fecha solo.
+      const topeDoble = nextWeekLastDate();
+      if (baseDate > topeDoble) {
+        await sendWA(from,
+          `Solo puedo reservar hasta el *${formatDate(topeDoble)}* 🗓️\n` +
+          `Dime un día antes de esa fecha y te preparo la clase doble.`);
         done(); return;
       }
       const t2 = addMinutes(t1, SLOT_MIN);
@@ -1685,9 +1711,14 @@ app.post('/bot', async (req, res) => {
       // La fecha del día del mes manda sobre todo lo demás ("el 19 a las 10:15")
       let targetDate = domDay ? domDay.date : state.currentDate;
       if (!domDay && dow) {
+        // Preferir un día que SE LE ESTÉ OFRECIENDO. Si no, "el martes" podía
+        // resolverse a una fecha fuera de la oferta y el bot respondía "ese día
+        // no quedan huecos" para, acto seguido, enseñar ese mismo día.
+        const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
         const df = state.weekMode ? dateForDow(dow) : null;
-        targetDate = df ? df.date
-          : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null);
+        targetDate = enOferta ? enOferta.date
+          : (df ? df.date
+                : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null));
       }
       if (!targetDate) targetDate = days[0].date;
 
@@ -1772,9 +1803,11 @@ app.post('/bot', async (req, res) => {
 
     // Preguntó por un día concreto (sin hora): enseñar sus horas
     if (dow) {
+      const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
       const df = state.weekMode ? dateForDow(dow) : null;
-      const targetDate = df ? df.date
-        : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null);
+      const targetDate = enOferta ? enOferta.date
+        : (df ? df.date
+              : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null));
       const dayObj = targetDate ? days.find(d => d.date === targetDate) : null;
       if (dayObj) {
         state.currentDate = dayObj.date;
