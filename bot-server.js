@@ -164,6 +164,25 @@ async function loadPending() {
   } catch (e) { console.error('loadPending:', e.message); }
 }
 
+// Borra las conversaciones ya caducadas, de memoria y de la nube.
+// Antes solo se limpiaban al arrancar y en el cierre del jueves —y ese solo
+// recorría a los alumnos activos—, así que los hilos de cualquier otro número
+// se acumulaban sin fin. Importa porque un alumno con un hilo colgado se
+// SALTA la campaña del martes.
+async function purgeExpiredPending() {
+  const now = Date.now();
+  let n = 0;
+  for (const [phone, st] of Object.entries(pending)) {
+    if (st && st.expires && st.expires < now) {
+      delete pending[phone];
+      await persistPending(phone);
+      n++;
+    }
+  }
+  if (n) console.log(`🧹 Conversaciones caducadas eliminadas: ${n}`);
+  return n;
+}
+
 // ── Normalización de teléfonos ────────────────────────────
 // Las autoescuelas escriben los números sin prefijo ("644299702"):
 // añadimos +34 a los números españoles de 9 cifras para que Twilio
@@ -740,12 +759,20 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
 }
 
 async function isSlotFree(profId, date, time) {
-  const [slots, examDays, blocked] = await Promise.all([
-    loadSlots(), loadExamDays(), loadBlocked(),
+  const [slots, examDays, blocked, avail] = await Promise.all([
+    loadSlots(), loadExamDays(), loadBlocked(), loadAvailability(),
   ]);
-  if (examDays.includes(String(date).substring(0, 10))) return false;
-  if (isBlockedSlotSync(blocked, profId, date, String(time).substring(0, 5))) return false;
-  return !overlapsExisting(slots, profId, date, String(time).substring(0, 5));
+  const d10 = String(date).substring(0, 10);
+  const hh  = String(time).substring(0, 5);
+  if (examDays.includes(d10)) return false;
+  // El profesor tiene que TRABAJAR ese día a esa hora. Faltaba comprobarlo:
+  // las horas del flujo normal salen de nextFreeSlots (que sí lo respeta),
+  // pero la clase doble elige la hora por su cuenta y podía colarse fuera del
+  // horario del profesor (p. ej. doblar la última clase de la tarde).
+  const dow = new Date(d10 + 'T12:00:00').getDay();
+  if (!hoursForProfDaySync(avail, profId, dow).includes(hh)) return false;
+  if (isBlockedSlotSync(blocked, profId, d10, hh)) return false;
+  return !overlapsExisting(slots, profId, d10, hh);
 }
 
 // ── Próximas clases reservadas de un alumno (ordenadas) ──
@@ -831,25 +858,47 @@ function parseBookingText(text) {
     if (t.includes(n)) { dow = num; break; }
   }
 
-  let hour = null;
-  const m1 = t.match(/(\d{1,2}):(\d{2})/);
-  if (m1) {
-    hour = m1[1].padStart(2, '0') + ':' + m1[2];
-  } else {
-    const m2 = t.match(/(\d{1,2})\s*h/);
-    if (m2) hour = m2[1].padStart(2, '0') + ':00';
-    else {
-      const m3 = t.match(/las\s+(\d{1,2})/);
-      if (m3) hour = m3[1].padStart(2, '0') + ':00';
-      else {
-        const m4 = t.match(/\b(\d{1,2})\b/);
-        if (m4 && parseInt(m4[1]) >= 7 && parseInt(m4[1]) <= 20)
-          hour = m4[1].padStart(2, '0') + ':00';
+  let hour = null, dom = null;
+  const setHour = (h, m) => {
+    h = parseInt(h, 10); m = m == null ? 0 : parseInt(m, 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59)
+      hour = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  };
+
+  // ── Hora CON minutos, tolerando cómo la escribe la gente ──
+  // 11:45 · 11.45 · 11,45 · 11y45 · 11h45 · 1145
+  // Ojo: "y"/"h" solo valen de separador SIN espacios. Con espacios, "19 y 20"
+  // son dos DÍAS, no las 19:20 (era un fallo real).
+  const conMin = t.match(/\b(\d{1,2})\s*[:.]\s*(\d{2})\b/)
+              || t.match(/\b(\d{1,2}),(\d{2})\b/)
+              || t.match(/\b(\d{1,2})[yh](\d{2})\b/)
+              || t.match(/\b(\d{2})(\d{2})\b(?!\d)/);
+  let resto = t;
+  if (conMin) { setHour(conMin[1], conMin[2]); resto = t.replace(conMin[0], ' '); }
+  if (!hour) { const m2 = resto.match(/\b(\d{1,2})\s*h\b/);   if (m2) { setHour(m2[1], 0); resto = resto.replace(m2[0], ' '); } }
+  if (!hour) { const m3 = resto.match(/\blas\s+(\d{1,2})\b/); if (m3) { setHour(m3[1], 0); resto = resto.replace(m3[0], ' '); } }
+
+  // ── Día del MES ──────────────────────────────────────────
+  // La semana que se ofrece (17-22) usa números que también son horas válidas
+  // (17:00-20:00), así que "miércoles 19" se leía como las 19:00. Reglas:
+  //  · "el 19" / "día 19"            → fecha (nunca hora)
+  //  · día de la semana + número     → fecha (nunca hora)
+  //  · número suelto                 → candidato a las DOS cosas; decide el
+  //    flujo, que es quien sabe qué fechas y qué horas hay libres.
+  const mDia = resto.match(/\b(?:dia|el)\s+(\d{1,2})\b/);
+  if (mDia) { const d = parseInt(mDia[1], 10); if (d >= 1 && d <= 31) dom = d; }
+  if (dom == null) {
+    const suelto = resto.match(/\b(\d{1,2})\b/);
+    if (suelto) {
+      const v = parseInt(suelto[1], 10);
+      if (v >= 1 && v <= 31) {
+        if (dow != null || hour) dom = v;                       // fecha segura
+        else { dom = v; if (v >= 7 && v <= 21) setHour(v, 0); }  // ambiguo
       }
     }
   }
 
-  return { dow, hour };
+  return { dow, hour, dom };
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1106,6 +1155,10 @@ async function sendBookingRequests(force = false) {
   }
 
   const allStudents = await loadStudents();
+  // Antes de nada, quitar hilos caducados: si no, esos alumnos se saltarían la
+  // campaña por una conversación vieja que ya no está viva.
+  await purgeExpiredPending();
+
   const students = allStudents.filter(s => s.active && s.phone && s.botActive !== false);
   const slots    = await loadSlots();
   const weekDates = nextWeekDates().map(w => w.date);
@@ -1113,7 +1166,12 @@ async function sendBookingRequests(force = false) {
   let sent = 0, skipped = 0;
 
   const nextMon = ymdLocal(nextWeekMonday());
+  let fallidos = 0;
   for (const st of students) {
+    // Red de seguridad por alumno: si uno falla (teléfono raro, bache de Meta,
+    // error puntual de BD) se registra y la campaña SIGUE con los demás. Antes
+    // un solo fallo cortaba el envío y el resto se quedaba sin mensaje.
+    try {
     if (pending[st.phone]) { console.log(`⏭️  ${st.name} ya en conversación`); continue; }
 
     // Si ya tiene clases la semana que viene, no molestar en los recordatorios
@@ -1152,8 +1210,18 @@ async function sendBookingRequests(force = false) {
     pending[st.phone] = stt;
     await persistPending(st.phone);
     sent++;
+    } catch (e) {
+      fallidos++;
+      console.error(`❌ Campaña: fallo con ${st.name} (${st.phone}): ${e && e.message ? e.message : e}`);
+    }
   }
-  console.log(`✅ Campaña: ${sent} contactados · ${skipped} ya tenían clases (no molestados)`);
+  console.log(`✅ Campaña: ${sent} contactados · ${skipped} ya tenían clases (no molestados)` +
+              (fallidos ? ` · ⚠️ ${fallidos} con error` : ''));
+  if (fallidos) {
+    await sendWA(NOTIFY_ADMIN,
+      `⚠️ *Campaña de ${SCHOOL_NAME}*\n\n${sent} alumnos contactados, pero ${fallidos} han fallado.\n` +
+      `Revisa el log de Railway para ver cuáles.`).catch(() => {});
+  }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1376,7 +1444,10 @@ app.post('/bot', async (req, res) => {
   // colgado y que el siguiente "hola" empiece limpio.
   if (/(cancel\w*|anul\w*|quitar)/.test(norm(body))) {
     const stC = (await loadStudents()).find(s => s.phone === from && s.active);
-    if (pending[from]) delete pending[from];
+    // Solo se cierra el hilo si era una cancelación heredada. Si estaba
+    // reservando, su conversación se MANTIENE: antes se borraba y el siguiente
+    // mensaje ("jueves 20") empezaba de cero ignorando el día que pedía.
+    if (pending[from] && pending[from].type === 'cancel') delete pending[from];
     await sendWA(from, cancelRedirectMsg(stC ? stC.name : ''));
     done(); return;
   }
@@ -1390,6 +1461,15 @@ app.post('/bot', async (req, res) => {
     if (stD) {
       const profIdD = stD.profId ?? stD.prof_id;
       const pb = parseBookingText(body);
+      // Una PREGUNTA sin día ni hora NO reserva. Caso real: un alumno escribió
+      // "pero es doble?" y el bot le reservó 45 minutos de más. Si la pregunta
+      // sí trae día u hora ("¿puedo una doble a las 12:00?") se atiende normal.
+      if (/\?/.test(body) && !pb.hour && pb.dom == null && pb.dow == null) {
+        await sendWA(from,
+          `Sí, puedo reservarte una clase *doble* (90 min seguidos) 👍\n` +
+          `Dime el día y la hora de inicio, por ejemplo *miércoles 9:30 doble*.`);
+        done(); return;
+      }
       let baseDate = null, t1 = null;
       if (pb.hour) {
         // El alumno dijo una hora concreta → esa es la 1ª media hora de la doble
@@ -1405,6 +1485,15 @@ app.post('/bot', async (req, res) => {
       }
       if (!baseDate || !t1) {
         await sendWA(from, `Para una clase *doble* dime el día y la hora, por ej. *miércoles 9:30 doble*. 🚗`);
+        done(); return;
+      }
+      // El mismo tope que el resto del bot: no se reserva más allá de la
+      // semana que viene. Este flujo se lo saltaba porque elige la fecha solo.
+      const topeDoble = nextWeekLastDate();
+      if (baseDate > topeDoble) {
+        await sendWA(from,
+          `Solo puedo reservar hasta el *${formatDate(topeDoble)}* 🗓️\n` +
+          `Dime un día antes de esa fecha y te preparo la clase doble.`);
         done(); return;
       }
       const t2 = addMinutes(t1, SLOT_MIN);
@@ -1560,13 +1649,45 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
-    const { dow, hour } = parseBookingText(body);
+    const { dow, hour, dom } = parseBookingText(body);
+
+    // Día del MES: si el número coincide con uno de los días ofertados, manda
+    // la fecha. Así "miércoles 19" ya no se interpreta como las 19:00.
+    const domDay = dom != null
+      ? (days.find(d => Number(String(d.date).substring(8, 10)) === dom) || null)
+      : null;
+
+    // Un "no" JUSTO DESPUÉS de reservar significa "no quiero más clases", no
+    // "enséñame otro día". Antes encadenaba días y el alumno acababa
+    // reservando de más a base de decir que no.
+    if (state.justBooked && !hour && !domDay && (isNo(body) || isDone(body))) {
+      delete pending[from];
+      const resumen = await listaClasesAlumno(state.studentId);
+      await sendWA(from,
+        `¡Perfecto ${state.studentName}! 👌\n\n📋 *Tus clases reservadas:*\n${resumen}\n\n` +
+        `Te recordaremos cada una 48h antes. 🚗`);
+      done();
+      return;
+    }
+
+    // Número suelto que coincide con un día ofertado ("19" = ¿día 19 o las
+    // 19:00?). Se enseña el DÍA, que es lo seguro: así nunca se reserva una
+    // hora que el alumno no ha pedido.
+    const ambiguo = dom != null && hour === `${String(dom).padStart(2, '0')}:00`;
+    if (domDay && ambiguo) {
+      state.justBooked = false;
+      state.currentDate = domDay.date;
+      await sendWA(from, dayMenuMessage(domDay, `Te enseño el ${domDay.dayName} ${formatDate(domDay.date)}. `));
+      done();
+      return;
+    }
 
     // "otro día" / "no" → AVANZAR al siguiente día con huecos (por orden).
     // Antes solo se saltaba el día actual → hacía ping-pong entre 2 días.
     // Ahora avanza por índice; cuando ya se han visto todos, se enseñan todos
     // los días de golpe y se avisa de que no hay más.
-    if (!hour && (isNo(body) || /siguiente|otro dia|proxim|otra fecha|mas dias/.test(norm(body)))) {
+    if (!hour && !domDay && (isNo(body) || /siguiente|otro dia|proxim|otra fecha|mas dias/.test(norm(body)))) {
+      state.justBooked = false;
       const idx = days.findIndex(d => d.date === state.currentDate);
       if (idx >= 0 && idx + 1 < days.length) {
         const next = days[idx + 1];
@@ -1587,11 +1708,17 @@ app.post('/bot', async (req, res) => {
     // El alumno eligió una hora (con o sin día): reservar esa clase
     if (hour) {
       const hh = hour.padStart(5, '0');
-      let targetDate = state.currentDate;
-      if (dow) {
+      // La fecha del día del mes manda sobre todo lo demás ("el 19 a las 10:15")
+      let targetDate = domDay ? domDay.date : state.currentDate;
+      if (!domDay && dow) {
+        // Preferir un día que SE LE ESTÉ OFRECIENDO. Si no, "el martes" podía
+        // resolverse a una fecha fuera de la oferta y el bot respondía "ese día
+        // no quedan huecos" para, acto seguido, enseñar ese mismo día.
+        const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
         const df = state.weekMode ? dateForDow(dow) : null;
-        targetDate = df ? df.date
-          : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null);
+        targetDate = enOferta ? enOferta.date
+          : (df ? df.date
+                : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null));
       }
       if (!targetDate) targetDate = days[0].date;
 
@@ -1643,6 +1770,7 @@ app.post('/bot', async (req, res) => {
         }
         const nextDay = remaining.find(d => d.date !== match.date) || remaining[0];
         state.currentDate = nextDay.date;
+        state.justBooked = true;   // un "no" ahora significa "no quiero más"
         await sendWA(from,
           `✅ ¡Reservada! *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n` +
           `📋 *Tus clases:*\n${resumen}\n\n` +
@@ -1664,11 +1792,22 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
+    // Pidió un día por su número ("el 19", "19 y 20"): enseñar sus horas
+    if (domDay) {
+      state.justBooked = false;
+      state.currentDate = domDay.date;
+      await sendWA(from, dayMenuMessage(domDay, ''));
+      done();
+      return;
+    }
+
     // Preguntó por un día concreto (sin hora): enseñar sus horas
     if (dow) {
+      const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
       const df = state.weekMode ? dateForDow(dow) : null;
-      const targetDate = df ? df.date
-        : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null);
+      const targetDate = enOferta ? enOferta.date
+        : (df ? df.date
+              : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null));
       const dayObj = targetDate ? days.find(d => d.date === targetDate) : null;
       if (dayObj) {
         state.currentDate = dayObj.date;
@@ -1685,7 +1824,14 @@ app.post('/bot', async (req, res) => {
     // Cualquier otra cosa (SÍ / saludo / no reconocido): enseñar el día actual o el primero
     const cur = (state.currentDate && days.find(d => d.date === state.currentDate)) || days[0];
     state.currentDate = cur.date;
-    await sendWA(from, dayMenuMessage(cur, ''));
+    state.justBooked = false;
+    // Si venía un número y no se ha entendido, hay que DECIRLO. Antes se
+    // repetía el menú en silencio y el alumno se quedaba creyendo que había
+    // reservado (caso real: escribió "11y45" y se quedó sin clase).
+    const pareceHora = /\d/.test(norm(body)) && !isYes(body);
+    await sendWA(from, dayMenuMessage(cur, pareceHora
+      ? 'No te he entendido 🤔 Dime solo la hora, por ejemplo *11:45*.\n\n'
+      : ''));
     done();
     return;
   }
@@ -1751,14 +1897,20 @@ cron.schedule('0 8 * * *', checkMetaToken, { timezone: 'Europe/Madrid' });
 // Jueves 23:59 → avisar a quien no reservó y limpiar pendientes
 cron.schedule('59 23 * * 4', async () => {
   console.log('\n🔒 Cerrando ventana de reservas...');
-  const students = await loadStudents();
-
-  // Cierre en SILENCIO: el bot no escribe fuera del martes. Solo limpia las
-  // conversaciones abiertas para que no queden colgadas.
-  for (const st of students.filter(s => s.active && s.phone)) {
-    if (pending[st.phone]) { delete pending[st.phone]; await persistPending(st.phone); }
+  // Cierre en SILENCIO: el bot no escribe fuera del martes. Se limpian TODAS
+  // las conversaciones abiertas, no solo las de alumnos activos: si no, los
+  // hilos de cualquier otro número se quedaban para siempre.
+  let n = 0;
+  for (const phone of Object.keys(pending)) {
+    delete pending[phone];
+    await persistPending(phone);
+    n++;
   }
+  console.log(`🧹 Conversaciones cerradas: ${n}`);
 }, { timezone: 'Europe/Madrid' });
+
+// Cada hora, barrido de conversaciones caducadas (evita que se acumulen)
+cron.schedule('30 * * * *', purgeExpiredPending, { timezone: 'Europe/Madrid' });
 
 // ════════════════════════════════════════════════════════════
 // RUTAS DE TEST
@@ -1951,7 +2103,7 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
 // avisar al alumno por WhatsApp. Recibe los datos de la clase (el slot puede
 // que ya no exista en la BD). Envía la plantilla clase_cancelada.
 app.post('/api/notify-cancel', async (req, res) => {
-  const { studentId, phone, date, time, dayName } = req.body || {};
+  const { studentId, phone, date, time, dayName, end } = req.body || {};
   let name = req.body?.name || '';
   let to = phone || null;
   if (!to && studentId) {
@@ -1959,7 +2111,12 @@ app.post('/api/notify-cancel', async (req, res) => {
     if (st) { to = st.phone; name = name || st.name; }
   }
   if (!to) return res.status(400).json({ error: 'Falta el teléfono del alumno' });
-  const cita = `${dayName || (date ? formatDate(date) : '')}${time ? ' a las ' + String(time).substring(0,5) + 'h' : ''}`.trim() || 'tu próxima clase';
+  // Igual que en el aviso de cambio: inicio y fin, para que una clase doble se
+  // entienda ("de 11:00 a 12:30") y no parezca que solo se anula media.
+  const diaTxt = dayName || (date ? formatDate(date) : '');
+  const iniTxt = time ? String(time).substring(0, 5) : '';
+  const finTxt = end ? String(end).substring(0, 5) : (iniTxt ? addMinutes(iniTxt, SLOT_MIN) : '');
+  const cita = (iniTxt ? `${diaTxt} de ${iniTxt} a ${finTxt}` : diaTxt).trim() || 'tu próxima clase';
   const msg =
     `❌ *Clase cancelada — ${SCHOOL_NAME}*\n\n` +
     `Hola ${name || ''}, tu clase del *${cita}* ha sido *cancelada* por la autoescuela.\n\n` +

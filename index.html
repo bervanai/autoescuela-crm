@@ -3113,6 +3113,7 @@ function Horario({
     setCanUndo(undoStack.current.length > 0);
   };
   const saveSlot = f => {
+    if (!confirmaSiFueraDeSemana(f.date)) return;
     pushUndo();
     const k = `${f.date}_${f.time}_${f.profId}`;
     setSlots(ss => ({
@@ -3125,16 +3126,20 @@ function Horario({
     setAdding(null);
     setEditing(null);
   };
-  const notifyCancel = async sl => {
-    if (!sl || !sl.studentId) return;
-    const stu = students.find(s => s.id === sl.studentId);
+  const notifyCancel = async slOrChain => {
+    const chain = Array.isArray(slOrChain) ? slOrChain : [slOrChain];
+    const first = chain[0];
+    if (!first || !first.studentId) return;
+    const stu = students.find(s => s.id === first.studentId);
     const url = (loadSchool().botUrl || '').replace(/\/$/, '');
     if (!stu || !url) return;
-    const dayName = new Date(sl.date + 'T12:00:00').toLocaleDateString('es-ES', {
+    const last = chain[chain.length - 1];
+    const dayName = new Date(first.date + 'T12:00:00').toLocaleDateString('es-ES', {
       weekday: 'long',
       day: 'numeric',
       month: 'long'
     });
+    const end = minToHHMM(hhmmToMin(last.time) + (last.duration || 45));
     try {
       await fetch(`${url}/api/notify-cancel`, {
         method: 'POST',
@@ -3144,8 +3149,9 @@ function Horario({
         body: JSON.stringify({
           studentId: stu.id,
           name: stu.name,
-          date: sl.date,
-          time: sl.time,
+          date: first.date,
+          time: first.time,
+          end,
           dayName
         }),
         signal: AbortSignal.timeout(6000)
@@ -3153,6 +3159,22 @@ function Horario({
     } catch (e) {}
   };
   const minToHHMM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const topeSemanaQueViene = () => {
+    const hoy = new Date(),
+      dw = hoy.getDay(),
+      diff = dw === 0 ? 1 : 8 - dw;
+    const lun = new Date(hoy);
+    lun.setDate(hoy.getDate() + diff);
+    lun.setHours(0, 0, 0, 0);
+    const sab = new Date(lun);
+    sab.setDate(lun.getDate() + 5);
+    return ymd(sab);
+  };
+  const confirmaSiFueraDeSemana = date => {
+    const tope = topeSemanaQueViene();
+    if (String(date).substring(0, 10) <= tope) return true;
+    return window.confirm(`⚠️ Esa fecha va más allá de la semana que viene (tope: ${tope}).\n\nEl bot solo reserva hasta ahí. ¿Crear la clase de todas formas?`);
+  };
   const blockOf = sl => {
     if (!sl || !sl.studentId) return sl ? [sl] : [];
     const same = Object.values(slots).filter(s => s.id !== sl.id && s.studentId === sl.studentId && s.profId === sl.profId && s.date === sl.date && s.slotType === sl.slotType);
@@ -3213,16 +3235,24 @@ function Horario({
   };
   const delSlot = id => {
     const sl = slots[id];
-    if (sl && sl.studentId) {
+    if (!sl) return;
+    const chain = blockOf(sl);
+    if (chain.length > 1) {
+      const mins = chain.reduce((a, s) => a + (s.duration || 45), 0);
+      if (!window.confirm(`Es una clase doble de ${mins} min (${String(chain[0].time).substring(0, 5)}–${minToHHMM(hhmmToMin(chain[chain.length - 1].time) + (chain[chain.length - 1].duration || 45))}). ¿Se borra entera?`)) return;
+    }
+    if (sl.studentId) {
       const stu = students.find(s => s.id === sl.studentId);
-      if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(sl);
+      if (window.confirm(`¿Avisar a ${stu?.name || 'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(chain);
     }
     pushUndo();
     setSlots(ss => {
       const n = {
         ...ss
       };
-      delete n[id];
+      chain.forEach(s => {
+        delete n[s.id];
+      });
       return n;
     });
     setEditing(null);
@@ -3231,6 +3261,7 @@ function Horario({
     const sl = slots[slotId];
     if (!sl) return;
     if (sl.date === date && sl.time === time && sl.profId === profId) return;
+    if (!confirmaSiFueraDeSemana(date)) return;
     const chain = blockOf(sl);
     const desfase = hhmmToMin(time) - hhmmToMin(sl.time);
     const movidas = chain.map(s => ({
@@ -3302,8 +3333,17 @@ function Horario({
     if (!sel.size) return;
     if (!window.confirm(`¿Borrar ${sel.size} clase(s) seleccionada(s)?`)) return;
     const conAlumno = [...sel].map(id => slots[id]).filter(s => s && s.studentId);
-    if (conAlumno.length && window.confirm(`¿Avisar por WhatsApp a los ${conAlumno.length} alumno(s) de que se cancelan sus clases?`)) {
-      conAlumno.forEach(sl => notifyCancel(sl));
+    const bloques = [];
+    const vistos = new Set();
+    conAlumno.forEach(sl => {
+      if (vistos.has(sl.id)) return;
+      const ch = blockOf(sl).filter(s => sel.has(s.id));
+      const bloque = ch.length ? ch : [sl];
+      bloque.forEach(s => vistos.add(s.id));
+      bloques.push(bloque);
+    });
+    if (bloques.length && window.confirm(`¿Avisar por WhatsApp a ${bloques.length} alumno(s)/clase(s) de que se cancelan?`)) {
+      bloques.forEach(b => notifyCancel(b));
     }
     pushUndo();
     setSlots(ss => {

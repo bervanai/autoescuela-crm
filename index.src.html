@@ -1417,17 +1417,23 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const [canUndo,setCanUndo]=useState(false);
   const pushUndo=()=>{undoStack.current.push(slots);if(undoStack.current.length>25)undoStack.current.shift();setCanUndo(true);};
   const undo=()=>{if(!undoStack.current.length)return;setSlots(undoStack.current.pop());setCanUndo(undoStack.current.length>0);};
-  const saveSlot=f=>{pushUndo();const k=`${f.date}_${f.time}_${f.profId}`;setSlots(ss=>({...ss,[k]:{...f,id:k}}));setAdding(null);setEditing(null);};
+  const saveSlot=f=>{if(!confirmaSiFueraDeSemana(f.date))return;pushUndo();const k=`${f.date}_${f.time}_${f.profId}`;setSlots(ss=>({...ss,[k]:{...f,id:k}}));setAdding(null);setEditing(null);};
   // Avisa al alumno por WhatsApp (vía el bot) de que su clase se ha cancelado.
-  const notifyCancel=async(sl)=>{
-    if(!sl||!sl.studentId)return;
-    const stu=students.find(s=>s.id===sl.studentId);
+  // Acepta una clase suelta o el bloque entero de una clase doble, para avisar
+  // UNA sola vez y con el rango real ("de 11:00 a 12:30").
+  const notifyCancel=async(slOrChain)=>{
+    const chain=Array.isArray(slOrChain)?slOrChain:[slOrChain];
+    const first=chain[0];
+    if(!first||!first.studentId)return;
+    const stu=students.find(s=>s.id===first.studentId);
     const url=(loadSchool().botUrl||'').replace(/\/$/,'');
     if(!stu||!url)return;
-    const dayName=new Date(sl.date+'T12:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+    const last=chain[chain.length-1];
+    const dayName=new Date(first.date+'T12:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+    const end=minToHHMM(hhmmToMin(last.time)+(last.duration||45));
     try{
       await fetch(`${url}/api/notify-cancel`,{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({studentId:stu.id,name:stu.name,date:sl.date,time:sl.time,dayName}),
+        body:JSON.stringify({studentId:stu.id,name:stu.name,date:first.date,time:first.time,end,dayName}),
         signal:AbortSignal.timeout(6000)});
     }catch(e){/* si el bot no responde, la clase se borra igual */}
   };
@@ -1437,6 +1443,21 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   // del mismo alumno. Aquí se reconstruye ese bloque a partir de una de ellas,
   // para poder moverlo entero y avisar de la hora real de inicio y de fin.
   const minToHHMM=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+  // ── Tope "solo hasta la semana que viene" ────────────────────────────────
+  // El bot nunca ofrece más allá del sábado de la semana siguiente, pero
+  // creando a mano en el CRM no había ningún control y aparecían clases
+  // sueltas semanas después. Aquí se avisa (no se prohíbe: el admin manda).
+  const topeSemanaQueViene=()=>{
+    const hoy=new Date(),dw=hoy.getDay(),diff=dw===0?1:8-dw;
+    const lun=new Date(hoy);lun.setDate(hoy.getDate()+diff);lun.setHours(0,0,0,0);
+    const sab=new Date(lun);sab.setDate(lun.getDate()+5);
+    return ymd(sab);
+  };
+  const confirmaSiFueraDeSemana=date=>{
+    const tope=topeSemanaQueViene();
+    if(String(date).substring(0,10)<=tope)return true;
+    return window.confirm(`⚠️ Esa fecha va más allá de la semana que viene (tope: ${tope}).\n\nEl bot solo reserva hasta ahí. ¿Crear la clase de todas formas?`);
+  };
   const blockOf=sl=>{
     if(!sl||!sl.studentId)return sl?[sl]:[];
     const same=Object.values(slots).filter(s=>s.id!==sl.id&&s.studentId===sl.studentId
@@ -1479,13 +1500,21 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     }catch(e){/* si el bot no responde, la clase se mueve igual */}
   };
   const delSlot=id=>{
-    const sl=slots[id];
-    if(sl&&sl.studentId){
+    const sl=slots[id]; if(!sl)return;
+    // Una clase doble son dos registros pegados: si se borra solo uno, el
+    // profesor se queda con un hueco fantasma y el alumno recibe el aviso de
+    // la mitad que no es. Se borra el bloque entero.
+    const chain=blockOf(sl);
+    if(chain.length>1){
+      const mins=chain.reduce((a,s)=>a+(s.duration||45),0);
+      if(!window.confirm(`Es una clase doble de ${mins} min (${String(chain[0].time).substring(0,5)}–${minToHHMM(hhmmToMin(chain[chain.length-1].time)+(chain[chain.length-1].duration||45))}). ¿Se borra entera?`))return;
+    }
+    if(sl.studentId){
       const stu=students.find(s=>s.id===sl.studentId);
-      if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(sl);
+      if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(chain);
     }
     pushUndo();
-    setSlots(ss=>{const n={...ss};delete n[id];return n;});setEditing(null);
+    setSlots(ss=>{const n={...ss};chain.forEach(s=>{delete n[s.id];});return n;});setEditing(null);
   };
   // Mover una clase (arrastrar) a otra hora/día/profesor, estilo Google Calendar.
   // Comprueba el solape antes de mover. Las clases del bot conservan su id.
@@ -1494,6 +1523,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     if(sl.date===date&&sl.time===time&&sl.profId===profId)return;
     // Si es una clase doble, se mueve el bloque ENTERO manteniendo las dos
     // mitades seguidas: antes se arrastraba solo una y la clase quedaba partida.
+    if(!confirmaSiFueraDeSemana(date))return;
     const chain=blockOf(sl);
     const desfase=hhmmToMin(time)-hhmmToMin(sl.time);
     const movidas=chain.map(s=>({...s,_newTime:minToHHMM(hhmmToMin(s.time)+desfase)}));
@@ -1540,8 +1570,18 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     if(!sel.size)return;
     if(!window.confirm(`¿Borrar ${sel.size} clase(s) seleccionada(s)?`))return;
     const conAlumno=[...sel].map(id=>slots[id]).filter(s=>s&&s.studentId);
-    if(conAlumno.length&&window.confirm(`¿Avisar por WhatsApp a los ${conAlumno.length} alumno(s) de que se cancelan sus clases?`)){
-      conAlumno.forEach(sl=>notifyCancel(sl));
+    // Agrupar por bloque: si se seleccionan las dos mitades de una clase doble
+    // hay que mandar UN aviso con el rango, no dos avisos sueltos.
+    const bloques=[];const vistos=new Set();
+    conAlumno.forEach(sl=>{
+      if(vistos.has(sl.id))return;
+      const ch=blockOf(sl).filter(s=>sel.has(s.id));
+      const bloque=ch.length?ch:[sl];
+      bloque.forEach(s=>vistos.add(s.id));
+      bloques.push(bloque);
+    });
+    if(bloques.length&&window.confirm(`¿Avisar por WhatsApp a ${bloques.length} alumno(s)/clase(s) de que se cancelan?`)){
+      bloques.forEach(b=>notifyCancel(b));
     }
     pushUndo();
     setSlots(ss=>{const n={...ss};sel.forEach(id=>delete n[id]);return n;});
