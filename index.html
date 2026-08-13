@@ -5529,9 +5529,10 @@ function Disponibilidad({
     }
     return chain;
   }
-  function clasesQueChocan(dias, horas) {
+  function clasesQueChocan(dias, horas, profes) {
+    const quien = new Set(profes && profes.length ? profes : [viewProf]);
     const set = new Set(horas);
-    const arr = (Array.isArray(slots) ? slots : Object.values(slots || {})).filter(s => s && s.id && s.profId === viewProf && s.status !== 'cancelled');
+    const arr = (Array.isArray(slots) ? slots : Object.values(slots || {})).filter(s => s && s.id && quien.has(s.profId) && s.status !== 'cancelled');
     const tocadas = arr.filter(s => {
       if (!s.studentId) return false;
       if (!dias.includes(s.date)) return false;
@@ -5587,6 +5588,111 @@ function Disponibilidad({
       return next;
     });
     setSaved(false);
+  }
+  const [masivasOpen, setMasivasOpen] = useState(false);
+  const [mAccion, setMAccion] = useState('bloquear');
+  const [mQuien, setMQuien] = useState('todos');
+  const [mDesdeDia, setMDesdeDia] = useState(() => nextWeek[0]?.date || ymd(new Date()));
+  const [mHastaDia, setMHastaDia] = useState(() => nextWeek[nextWeek.length - 1]?.date || ymd(new Date()));
+  const [mDesdeHora, setMDesdeHora] = useState('09:00');
+  const [mHastaHora, setMHastaHora] = useState('15:00');
+  const [mDias, setMDias] = useState([]);
+  const [mAplicando, setMAplicando] = useState(false);
+  const DIAS_SEMANA = [['Lunes', 1], ['Martes', 2], ['Miércoles', 3], ['Jueves', 4], ['Viernes', 5], ['Sábado', 6], ['Domingo', 0]];
+  const fechaCorta = d => {
+    const x = new Date(d + 'T12:00:00');
+    return isNaN(x) ? d : x.toLocaleDateString('es-ES', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    });
+  };
+  const lbl = {
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: 700,
+    marginBottom: 4,
+    letterSpacing: '.04em'
+  };
+  function fechasDelRango(desde, hasta, dows) {
+    const out = [];
+    const a = new Date(desde + 'T12:00:00'),
+      b = new Date(hasta + 'T12:00:00');
+    if (isNaN(a) || isNaN(b) || a > b) return out;
+    for (let d = new Date(a); d <= b; d.setDate(d.getDate() + 1)) {
+      if (dows.length && !dows.includes(d.getDay())) continue;
+      out.push(ymd(d));
+      if (out.length > 400) break;
+    }
+    return out;
+  }
+  const profesoresAfectados = () => mQuien === 'todos' ? (professors || []).map(p => p.id) : [mQuien];
+  async function aplicarMasivas() {
+    const dias = fechasDelRango(mDesdeDia, mHastaDia, mDias);
+    const horas = horasDelRango(mDesdeHora, mHastaHora);
+    const profes = profesoresAfectados();
+    if (!dias.length) {
+      alert('Ese rango de fechas no incluye ningún día. Revisa las fechas y los días de la semana marcados.');
+      return;
+    }
+    if (!horas.length) {
+      alert('Ese rango de horas no incluye ninguna hora.');
+      return;
+    }
+    if (!profes.length) {
+      alert('No hay profesores a los que aplicarlo.');
+      return;
+    }
+    const nCasillas = dias.length * horas.length * profes.length;
+    const quienTxt = mQuien === 'todos' ? `los ${profes.length} profesores` : `${(professors.find(p => p.id === mQuien) || {}).name || 'ese profesor'}`;
+    const cuandoTxt = `del ${fechaCorta(dias[0])} al ${fechaCorta(dias[dias.length - 1])}, de ${mDesdeHora} a ${mHastaHora}`;
+    if (mAccion === 'liberar') {
+      if (!window.confirm(`Liberar ${nCasillas} casilla(s) para ${quienTxt} ${cuandoTxt}.\n\n¿Continuar?`)) return;
+      setMAplicando(true);
+      lastEdit.current = Date.now();
+      setBlocked(prev => {
+        const n = {
+          ...prev
+        };
+        profes.forEach(pid => dias.forEach(date => horas.forEach(hour => {
+          delete n[`${pid}_${date}_${hour}`];
+        })));
+        return n;
+      });
+      setSaved(false);
+      setMAplicando(false);
+      setMasivasOpen(false);
+      return;
+    }
+    const afectadas = clasesQueChocan(dias, horas, profes);
+    if (afectadas.length) {
+      const lista = afectadas.slice(0, 12).map(b => {
+        const stu = (students || []).find(x => x.id === b[0].studentId);
+        const pr = (professors || []).find(p => p.id === b[0].profId);
+        return `• ${fechaCorta(b[0].date)}  ${horasBloque(b)}  ${stu ? stu.name : '(alumno)'}${pr ? `  · ${pr.name}` : ''}`;
+      }).join('\n');
+      if (!window.confirm(`Vas a bloquear ${nCasillas} casilla(s) para ${quienTxt} ${cuandoTxt}.\n\n` + `Hay ${afectadas.length} clase(s) con alumno dentro:\n\n${lista}` + (afectadas.length > 12 ? `\n… y ${afectadas.length - 12} más` : '') + `\n\nSe CANCELARÁN y se avisará a cada alumno por WhatsApp.\n\n` + `Si prefieres moverlas de hora, hazlo antes desde el Horario ` + `(al moverlas allí se avisa al alumno con el horario nuevo).\n\n¿Continuar?`)) return;
+    } else if (!window.confirm(`Bloquear ${nCasillas} casilla(s) para ${quienTxt} ${cuandoTxt}.\n\nNo hay ninguna clase dentro. ¿Continuar?`)) return;
+    setMAplicando(true);
+    if (afectadas.length) cancelaBloques(afectadas);
+    lastEdit.current = Date.now();
+    setBlocked(prev => {
+      const n = {
+        ...prev
+      };
+      profes.forEach(pid => dias.forEach(date => horas.forEach(hour => {
+        n[`${pid}_${date}_${hour}`] = {
+          profId: pid,
+          date,
+          hour,
+          blockedAt: Date.now()
+        };
+      })));
+      return n;
+    });
+    setSaved(false);
+    setMAplicando(false);
+    setMasivasOpen(false);
   }
   function toggleDiaEntero(date) {
     const todoBloqueado = AVAIL_HOURS.every(h => isBlocked(date, h));
@@ -6128,12 +6234,274 @@ function Disponibilidad({
     }
   }, "Desbloquear"), React.createElement("div", {
     style: {
+      flex: 1
+    }
+  }), React.createElement("button", {
+    onClick: () => setMasivasOpen(true),
+    style: {
+      padding: '8px 14px',
+      borderRadius: 8,
+      border: '1px solid #cbd5e1',
+      background: '#f8fafc',
+      color: '#16283f',
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: 'pointer',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 6
+    }
+  }, React.createElement(Icon, {
+    name: "checklist",
+    size: 16
+  }), "Acciones masivas"), React.createElement("div", {
+    style: {
       fontSize: 11,
       color: '#94a3b8',
-      flex: 1,
-      minWidth: 200
+      flex: '1 0 100%'
     }
-  }, "El ", React.createElement("strong", null, "hasta"), " es la hora a la que vuelve: de 09:00 a 15:00 deja libre la clase de las 15:00. También puedes pulsar el nombre de un día para bloquearlo entero.")), React.createElement("div", {
+  }, "El ", React.createElement("strong", null, "hasta"), " es la hora a la que vuelve: de 09:00 a 15:00 deja libre la clase de las 15:00. También puedes pulsar el nombre de un día para bloquearlo entero. Con ", React.createElement("strong", null, "Acciones masivas"), " lo aplicas a varias semanas y a todos los profesores de una vez.")), masivasOpen && React.createElement("div", {
+    onClick: e => {
+      if (e.target === e.currentTarget) setMasivasOpen(false);
+    },
+    style: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(15,23,42,.45)',
+      zIndex: 2000,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      background: '#fff',
+      borderRadius: 14,
+      width: '100%',
+      maxWidth: 620,
+      maxHeight: '90vh',
+      overflowY: 'auto',
+      boxShadow: '0 20px 50px rgba(0,0,0,.25)'
+    }
+  }, React.createElement("div", {
+    style: {
+      padding: '18px 22px 0',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start'
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 800,
+      color: '#16283f'
+    }
+  }, "Acciones masivas"), React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: '#64748b',
+      marginTop: 2
+    }
+  }, "Bloquea o libera un rango de fechas y horas de una vez.")), React.createElement("button", {
+    onClick: () => setMasivasOpen(false),
+    style: {
+      border: 'none',
+      background: 'none',
+      cursor: 'pointer',
+      color: '#94a3b8',
+      fontSize: 22,
+      lineHeight: 1
+    }
+  }, "×")), React.createElement("div", {
+    style: {
+      padding: '16px 22px',
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: '14px 18px'
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: lbl
+  }, "QUÉ HACER"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: '100%'
+    },
+    value: mAccion,
+    onChange: e => setMAccion(e.target.value)
+  }, React.createElement("option", {
+    value: "bloquear"
+  }, "Bloquear esas horas"), React.createElement("option", {
+    value: "liberar"
+  }, "Liberar esas horas"))), React.createElement("div", null, React.createElement("div", {
+    style: lbl
+  }, "A QUIÉN AFECTA"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: '100%'
+    },
+    value: mQuien,
+    onChange: e => setMQuien(e.target.value),
+    disabled: !isAdmin
+  }, isAdmin && React.createElement("option", {
+    value: "todos"
+  }, "Toda la autoescuela"), (isAdmin ? professors : professors.filter(p => p.id === user.id)).map(p => React.createElement("option", {
+    key: p.id,
+    value: p.id
+  }, p.name)))), React.createElement("div", null, React.createElement("div", {
+    style: lbl
+  }, "DESDE EL DÍA *"), React.createElement("input", {
+    type: "date",
+    className: inp,
+    style: {
+      width: '100%'
+    },
+    value: mDesdeDia,
+    onChange: e => setMDesdeDia(e.target.value)
+  })), React.createElement("div", null, React.createElement("div", {
+    style: lbl
+  }, "HASTA EL DÍA *"), React.createElement("input", {
+    type: "date",
+    className: inp,
+    style: {
+      width: '100%'
+    },
+    value: mHastaDia,
+    onChange: e => setMHastaDia(e.target.value)
+  }), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 3
+    }
+  }, "Incluido.")), React.createElement("div", null, React.createElement("div", {
+    style: lbl
+  }, "DESDE LA HORA *"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: '100%'
+    },
+    value: mDesdeHora,
+    onChange: e => setMDesdeHora(e.target.value)
+  }, AVAIL_HOURS.map(h => React.createElement("option", {
+    key: h,
+    value: h
+  }, h)))), React.createElement("div", null, React.createElement("div", {
+    style: lbl
+  }, "HASTA LA HORA *"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: '100%'
+    },
+    value: mHastaHora,
+    onChange: e => setMHastaHora(e.target.value)
+  }, AVAIL_HOURS.map(h => React.createElement("option", {
+    key: h,
+    value: h
+  }, h))), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 3
+    }
+  }, "Es la hora a la que vuelve: queda libre.")), React.createElement("div", {
+    style: {
+      gridColumn: '1 / -1'
+    }
+  }, React.createElement("div", {
+    style: lbl
+  }, "DÍAS DE LA SEMANA"), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap'
+    }
+  }, DIAS_SEMANA.map(([nombre, dow]) => {
+    const on = mDias.includes(dow);
+    return React.createElement("button", {
+      key: dow,
+      onClick: () => setMDias(prev => on ? prev.filter(d => d !== dow) : [...prev, dow]),
+      style: {
+        padding: '6px 12px',
+        borderRadius: 20,
+        fontSize: 12.5,
+        fontWeight: on ? 700 : 500,
+        cursor: 'pointer',
+        border: `1px solid ${on ? '#16283f' : '#e2e8f0'}`,
+        background: on ? '#16283f' : '#f8fafc',
+        color: on ? '#fff' : '#475569'
+      }
+    }, nombre);
+  })), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 5
+    }
+  }, "Si no marcas ninguno, se aplica a todos los días del rango.")), (() => {
+    const dias = fechasDelRango(mDesdeDia, mHastaDia, mDias);
+    const horas = horasDelRango(mDesdeHora, mHastaHora);
+    const nProf = profesoresAfectados().length;
+    const clases = mAccion === 'bloquear' && dias.length && horas.length ? clasesQueChocan(dias, horas, profesoresAfectados()) : [];
+    return React.createElement("div", {
+      style: {
+        gridColumn: '1 / -1',
+        background: '#f8fafc',
+        border: '1px solid #e2e8f0',
+        borderRadius: 10,
+        padding: '10px 13px',
+        fontSize: 12.5,
+        color: '#475569'
+      }
+    }, !dias.length || !horas.length ? React.createElement("span", {
+      style: {
+        color: '#c23c30'
+      }
+    }, "Ese rango no incluye ningún día u hora. Revisa las fechas.") : React.createElement(React.Fragment, null, React.createElement("strong", null, dias.length), " día(s) × ", React.createElement("strong", null, horas.length), " casilla(s) de 15 min × ", React.createElement("strong", null, nProf), " profesor(es).", mAccion === 'bloquear' && (clases.length ? React.createElement("div", {
+      style: {
+        color: '#c23c30',
+        marginTop: 4,
+        fontWeight: 600
+      }
+    }, "⚠️ Hay ", clases.length, " clase(s) con alumno dentro: se cancelarán y se les avisará por WhatsApp.") : React.createElement("div", {
+      style: {
+        color: '#0e6856',
+        marginTop: 4
+      }
+    }, "No hay ninguna clase dentro."))));
+  })()), React.createElement("div", {
+    style: {
+      padding: '0 22px 18px',
+      display: 'flex',
+      justifyContent: 'flex-end',
+      gap: 10
+    }
+  }, React.createElement("button", {
+    onClick: () => setMasivasOpen(false),
+    style: {
+      padding: '9px 16px',
+      borderRadius: 8,
+      border: '1px solid #e2e8f0',
+      background: '#fff',
+      color: '#475569',
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: 'pointer'
+    }
+  }, "Cancelar"), React.createElement("button", {
+    onClick: aplicarMasivas,
+    disabled: mAplicando,
+    style: {
+      padding: '9px 18px',
+      borderRadius: 8,
+      border: 'none',
+      background: mAplicando ? '#94a3b8' : mAccion === 'bloquear' ? '#ef4444' : '#0e6856',
+      color: '#fff',
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: mAplicando ? 'default' : 'pointer'
+    }
+  }, mAplicando ? 'Aplicando…' : 'Aplicar y guardar')))), React.createElement("div", {
     className: "avail-scroll",
     style: {
       background: '#fff',
