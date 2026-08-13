@@ -5437,6 +5437,72 @@ function Disponibilidad({
   function isBlocked(date, hour) {
     return !!blocked[`${viewProf}_${date}_${hour}`];
   }
+  const [rangoDia, setRangoDia] = useState('todos');
+  const [rangoIni, setRangoIni] = useState('09:00');
+  const [rangoFin, setRangoFin] = useState('15:00');
+  function horasDelRango(ini, fin) {
+    const a = hhmmToMin(ini),
+      b = hhmmToMin(fin);
+    const lo = Math.min(a, b),
+      hi = Math.max(a, b);
+    return AVAIL_HOURS.filter(h => {
+      const m = hhmmToMin(h);
+      return m >= lo && m <= hi;
+    });
+  }
+  function aplicarRango(bloquear) {
+    const horas = horasDelRango(rangoIni, rangoFin);
+    const dias = rangoDia === 'todos' ? nextWeek.map(w => w.date) : [rangoDia];
+    if (!horas.length) {
+      alert('Ese rango no incluye ninguna hora.');
+      return;
+    }
+    let ocupadas = 0;
+    lastEdit.current = Date.now();
+    setBlocked(prev => {
+      const next = {
+        ...prev
+      };
+      dias.forEach(date => horas.forEach(hour => {
+        if (hasSlotBooked(date, hour)) {
+          ocupadas++;
+          return;
+        }
+        const key = `${viewProf}_${date}_${hour}`;
+        if (bloquear) next[key] = {
+          profId: viewProf,
+          date,
+          hour,
+          blockedAt: Date.now()
+        };else delete next[key];
+      }));
+      return next;
+    });
+    setSaved(false);
+    if (ocupadas) setTimeout(() => alert(`⚠️ ${ocupadas} hora(s) ya tienen alumno: se han dejado como estaban.\n\nSi hay que quitarlas, hazlo desde el Horario para poder avisar al alumno.`), 50);
+  }
+  function toggleDiaEntero(date) {
+    const libres = AVAIL_HOURS.filter(h => !hasSlotBooked(date, h));
+    if (!libres.length) return;
+    const todoBloqueado = libres.every(h => isBlocked(date, h));
+    lastEdit.current = Date.now();
+    setBlocked(prev => {
+      const next = {
+        ...prev
+      };
+      libres.forEach(hour => {
+        const key = `${viewProf}_${date}_${hour}`;
+        if (todoBloqueado) delete next[key];else next[key] = {
+          profId: viewProf,
+          date,
+          hour,
+          blockedAt: Date.now()
+        };
+      });
+      return next;
+    });
+    setSaved(false);
+  }
   function hasSlotBooked(date, hour) {
     if (!slots) return false;
     const arr = Array.isArray(slots) ? slots : Object.values(slots);
@@ -5839,6 +5905,108 @@ function Disponibilidad({
     name: "warning",
     size: 16
   }), "Las horas marcadas como ", React.createElement("strong", null, "bloqueadas"), " no estarán disponibles para reservar la semana siguiente. Las horas que ya tienen alumno aparecen en gris y no se pueden modificar."), React.createElement("div", {
+    style: {
+      background: '#fff',
+      border: '1px solid #e2e8f0',
+      borderRadius: 12,
+      padding: '12px 16px',
+      marginBottom: 14,
+      display: 'flex',
+      alignItems: 'flex-end',
+      gap: 10,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: '#94a3b8',
+      fontWeight: 700,
+      marginBottom: 3
+    }
+  }, "DÍA"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: 150
+    },
+    value: rangoDia,
+    onChange: e => setRangoDia(e.target.value)
+  }, React.createElement("option", {
+    value: "todos"
+  }, "Toda la semana"), nextWeek.map(wd => React.createElement("option", {
+    key: wd.date,
+    value: wd.date
+  }, wd.label, " ", wd.date.slice(8))))), React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: '#94a3b8',
+      fontWeight: 700,
+      marginBottom: 3
+    }
+  }, "DESDE"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: 96
+    },
+    value: rangoIni,
+    onChange: e => setRangoIni(e.target.value)
+  }, AVAIL_HOURS.map(h => React.createElement("option", {
+    key: h,
+    value: h
+  }, h)))), React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: '#94a3b8',
+      fontWeight: 700,
+      marginBottom: 3
+    }
+  }, "HASTA"), React.createElement("select", {
+    className: inp,
+    style: {
+      width: 96
+    },
+    value: rangoFin,
+    onChange: e => setRangoFin(e.target.value)
+  }, AVAIL_HOURS.map(h => React.createElement("option", {
+    key: h,
+    value: h
+  }, h)))), React.createElement("button", {
+    onClick: () => aplicarRango(true),
+    style: {
+      padding: '8px 14px',
+      borderRadius: 8,
+      border: 'none',
+      background: '#ef4444',
+      color: '#fff',
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: 'pointer',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 6
+    }
+  }, React.createElement(Icon, {
+    name: "block",
+    size: 16
+  }), "Bloquear rango"), React.createElement("button", {
+    onClick: () => aplicarRango(false),
+    style: {
+      padding: '8px 14px',
+      borderRadius: 8,
+      border: '1px solid #e2e8f0',
+      background: '#fff',
+      color: '#475569',
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: 'pointer'
+    }
+  }, "Desbloquear"), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      flex: 1,
+      minWidth: 180
+    }
+  }, "Ej.: de 09:00 a 15:00. También puedes pulsar el nombre de un día para bloquearlo entero.")), React.createElement("div", {
     className: "avail-scroll",
     style: {
       background: '#fff',
@@ -5862,25 +6030,33 @@ function Disponibilidad({
       color: '#94a3b8',
       fontWeight: 600
     }
-  }, "HORA"), nextWeek.map(wd => React.createElement("div", {
-    key: wd.date,
-    style: {
-      padding: '7px 4px',
-      textAlign: 'center',
-      borderLeft: '1px solid #e2e8f0'
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 600,
-      color: '#091426'
-    }
-  }, wd.label), React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: '#94a3b8'
-    }
-  }, wd.date.slice(5).replace('-', '/'))))), AVAIL_HOURS.map((hour, hi) => React.createElement("div", {
+  }, "HORA"), nextWeek.map(wd => {
+    const libres = AVAIL_HOURS.filter(h => !hasSlotBooked(wd.date, h));
+    const diaBloqueado = libres.length > 0 && libres.every(h => isBlocked(wd.date, h));
+    return React.createElement("div", {
+      key: wd.date,
+      onClick: () => toggleDiaEntero(wd.date),
+      title: diaBloqueado ? 'Pulsa para desbloquear el día entero' : 'Pulsa para bloquear el día entero',
+      style: {
+        padding: '7px 4px',
+        textAlign: 'center',
+        borderLeft: '1px solid #e2e8f0',
+        cursor: 'pointer',
+        background: diaBloqueado ? '#fee2e2' : 'transparent'
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 600,
+        color: diaBloqueado ? '#ef4444' : '#091426'
+      }
+    }, diaBloqueado ? '🚫 ' : '', wd.label), React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: '#94a3b8'
+      }
+    }, wd.date.slice(5).replace('-', '/')));
+  })), AVAIL_HOURS.map((hour, hi) => React.createElement("div", {
     key: hour,
     style: {
       display: 'grid',

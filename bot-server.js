@@ -528,8 +528,18 @@ function hoursForProfDaySync(avail, profId, dowNum) {
   return [...HOURS_DEFAULT].sort();
 }
 
-function isBlockedSlotSync(blocked, profId, date, hour) {
-  return !!blocked[`${profId}_${date}_${hour}`];
+// ¿Choca una clase con una hora bloqueada? Una clase ocupa [hora, hora+45), y
+// la rejilla de bloqueos va de 15 en 15 min. Antes solo se miraba la hora de
+// INICIO, así que al bloquear "de 9:00 a 15:00" una clase que empezara a las
+// 08:45 (y terminara a las 09:30) se colaba dentro del bloqueo. Ahora se
+// comprueban todos los tramos que ocupa la clase.
+function isBlockedSlotSync(blocked, profId, date, hour, dur = SLOT_MIN) {
+  const ini = toMin(String(hour).substring(0, 5));
+  for (let m = ini; m < ini + dur; m += 15) {
+    const hh = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    if (blocked[`${profId}_${String(date).substring(0, 10)}_${hh}`]) return true;
+  }
+  return false;
 }
 
 async function isBlockedSlot(profId, date, hour) {
