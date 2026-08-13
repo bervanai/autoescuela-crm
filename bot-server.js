@@ -1418,6 +1418,36 @@ function parseIncoming(reqBody) {
   return null;
 }
 
+// ── Cola por teléfono ────────────────────────────────────────────────────
+// Los mensajes de un mismo alumno se atienden de UNO EN UNO y en orden. Antes
+// se procesaban a la vez: si mandaba dos seguidos, las respuestas podían salir
+// al revés (caso real: escribió "12:00" y "listo" con 2 segundos de diferencia
+// y recibió la despedida ANTES que el "✅ ¡Reservada!"), y dos horas iguales
+// muy seguidas podían colarse las dos en el mismo hueco.
+// Hay tope de espera: si un mensaje se atasca, el siguiente entra igualmente a
+// los 20 s en vez de dejar a ese alumno sin bot.
+const colaTelefono = new Map();          // teléfono → { p: promesa en curso, n: en espera }
+function turnoDe(phone) {
+  const c = colaTelefono.get(phone) || { p: Promise.resolve(), n: 0 };
+  c.n++;
+  let liberar;
+  const anterior = c.p;
+  c.p = new Promise(r => { liberar = r; });
+  colaTelefono.set(phone, c);
+  let hecho = false;
+  const soltar = () => {
+    if (hecho) return;
+    hecho = true;
+    liberar();
+    if (--c.n <= 0) colaTelefono.delete(phone);
+  };
+  const esperar = Promise.race([
+    anterior.catch(() => {}),
+    new Promise(r => setTimeout(r, 20000)),
+  ]);
+  return esperar.then(() => soltar);
+}
+
 app.post('/bot', async (req, res) => {
   const isMeta = !!req.body?.entry;
   // Cada proveedor firma a su manera: Twilio con el Auth Token, Meta con el
@@ -1442,6 +1472,7 @@ app.post('/bot', async (req, res) => {
   // NUNCA tumbe el proceso. Un mensaje raro o un fallo puntual de Supabase no
   // puede dejar el bot sin servicio ni borrar las conversaciones en curso.
   let convPhone = null;
+  let soltarTurno = null;
   try {
   const parsed = parseIncoming(req.body);
   if (!parsed || !parsed.body) {           // status update u otro evento: ignorar
@@ -1451,6 +1482,8 @@ app.post('/bot', async (req, res) => {
   const from = parsed.from;
   convPhone = from;
   const body = parsed.body;
+  // Espera a que termine el mensaje anterior de ESTE alumno (ver turnoDe)
+  soltarTurno = await turnoDe(from);
   // Idempotencia: si Meta reenvía el mismo webhook, no lo procesamos dos veces
   // (evita respuestas y reservas duplicadas).
   if (alreadySeen(parsed.id)) {
@@ -1960,6 +1993,8 @@ app.post('/bot', async (req, res) => {
     // Guardar en la nube el estado (o su borrado) tras atender el mensaje,
     // para que la conversación sobreviva a cualquier reinicio del bot.
     if (convPhone) persistPending(convPhone).catch(() => {});
+    // Ceder el turno al siguiente mensaje de este alumno, pase lo que pase
+    if (soltarTurno) { try { soltarTurno(); } catch (_) {} }
   }
 });
 
