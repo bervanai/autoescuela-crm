@@ -1399,7 +1399,7 @@ function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
   );
 }
 
-function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setExamDays}){
+function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setExamDays,onAccionesMasivas}){
   const isAdmin=user.role==='admin';
   const [off,setOff]=useState(0);
   const [vProf,setVProf]=useState(isAdmin?'all':user.id);
@@ -1733,6 +1733,14 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
           onMouseLeave={e=>{e.currentTarget.style.background='#fff';e.currentTarget.style.borderColor='#e2e8f0';}}>
           <Icon name="print" size={16}/>Exportar PDF
         </button>
+        {isAdmin&&onAccionesMasivas&&(
+          <button onClick={onAccionesMasivas}
+            title="Bloquear o liberar un rango de fechas y horas de una vez"
+            style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',borderRadius:7,border:'1px solid #cbd5e1',
+              background:'#f8fafc',color:'#16283f',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
+            <Icon name="event_busy" size={16}/>Acciones masivas
+          </button>
+        )}
         {isAdmin&&(
           <button onClick={()=>selMode?exitSel():setSelMode(true)}
             style={{display:'flex',alignItems:'center',gap:5,padding:'5px 11px',borderRadius:7,border:'1px solid',
@@ -2438,7 +2446,7 @@ function defaultAvail(){
   return a;
 }
 
-function Disponibilidad({user,professors,students,slots,setSlots}){
+function Disponibilidad({user,professors,students,slots,setSlots,abrirMasivas}){
   // Con Supabase, la nube es la fuente: empezar vacío y esperar al pull
   const [avail,setAvail]=useState(()=>load('crm_avail_v1',null)||(getSupabase()?{}:defaultAvail()));
   const [blocked,setBlocked]=useState(()=>load('crm_blocked_v1',{}));
@@ -2697,6 +2705,8 @@ function Disponibilidad({user,professors,students,slots,setSlots}){
   const [mHastaHora,setMHastaHora]=useState('15:00');
   const [mDias,setMDias]=useState([]);               // vacío = todos los del rango
   const [mAplicando,setMAplicando]=useState(false);
+  // El botón del Horario nos manda aquí: abrir el modal y poner la pestaña
+  useEffect(()=>{ if(abrirMasivas){ setTab('bloquear'); setMasivasOpen(true); } },[abrirMasivas]);
   const DIAS_SEMANA=[['Lunes',1],['Martes',2],['Miércoles',3],['Jueves',4],['Viernes',5],['Sábado',6],['Domingo',0]];
   const fechaCorta=d=>{const x=new Date(d+'T12:00:00');
     return isNaN(x)?d:x.toLocaleDateString('es-ES',{weekday:'short',day:'numeric',month:'short'});};
@@ -3593,6 +3603,10 @@ function App(){
   const [user,setUser]=useState(()=>{try{const u=sessionStorage.getItem('crm_u');return u?JSON.parse(u):null}catch{return null}});
   const [page,setPage]=useState('dashboard');
   const [navOpen,setNavOpen]=useState(false);
+  // Sello de tiempo: al cambiar, Disponibilidad abre el modal de acciones
+  // masivas. Así el botón del Horario lleva ahí directamente, con una sola
+  // implementación del modal.
+  const [abrirMasivas,setAbrirMasivas]=useState(0);
   const [professors,setProfessors]=useState(()=>load('crm_professors_v3',PROFESSORS));
   const [vehicles,setVehicles]=useState(()=>load('crm_vehicles_v3',VEHICLES));
   // Con Supabase configurado, la nube es la fuente de verdad: no sembrar demo
@@ -3972,8 +3986,9 @@ function App(){
   const pages={
     dashboard:      <Dashboard {...shared} slots={slots}/>,
     alumnos:        <Alumnos {...shared} setStudents={setStudents}/>,
-    horario:        <Horario {...shared} slots={slots} setSlots={setSlots} vehicles={vehicles} examDays={examDays} setExamDays={setExamDays}/>,
-    disponibilidad: <Disponibilidad {...shared} slots={slots} setSlots={setSlots}/>,
+    horario:        <Horario {...shared} slots={slots} setSlots={setSlots} vehicles={vehicles} examDays={examDays} setExamDays={setExamDays}
+                      onAccionesMasivas={()=>{setAbrirMasivas(Date.now());setPage('disponibilidad');}}/>,
+    disponibilidad: <Disponibilidad {...shared} slots={slots} setSlots={setSlots} abrirMasivas={abrirMasivas}/>,
     profesores:     <Profesores {...shared} vehicles={vehicles} setProfessors={setProfessors}/>,
     vehiculos:      <Vehiculos user={user} vehicles={vehicles} setVehicles={setVehicles}/>,
     mensajes:       <Mensajes {...shared} slots={slots}/>,
