@@ -3085,7 +3085,8 @@ function Horario({
   professors,
   user,
   examDays,
-  setExamDays
+  setExamDays,
+  onAccionesMasivas
 }) {
   const isAdmin = user.role === 'admin';
   const [off, setOff] = useState(0);
@@ -3616,7 +3617,27 @@ function Horario({
   }, React.createElement(Icon, {
     name: "print",
     size: 16
-  }), "Exportar PDF"), isAdmin && React.createElement("button", {
+  }), "Exportar PDF"), isAdmin && onAccionesMasivas && React.createElement("button", {
+    onClick: onAccionesMasivas,
+    title: "Bloquear o liberar un rango de fechas y horas de una vez",
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 5,
+      padding: '5px 11px',
+      borderRadius: 7,
+      border: '1px solid #cbd5e1',
+      background: '#f8fafc',
+      color: '#16283f',
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: 'pointer',
+      whiteSpace: 'nowrap'
+    }
+  }, React.createElement(Icon, {
+    name: "event_busy",
+    size: 16
+  }), "Acciones masivas"), isAdmin && React.createElement("button", {
     onClick: () => selMode ? exitSel() : setSelMode(true),
     style: {
       display: 'flex',
@@ -5313,7 +5334,8 @@ function Disponibilidad({
   professors,
   students,
   slots,
-  setSlots
+  setSlots,
+  abrirMasivas
 }) {
   const [avail, setAvail] = useState(() => load('crm_avail_v1', null) || (getSupabase() ? {} : defaultAvail()));
   const [blocked, setBlocked] = useState(() => load('crm_blocked_v1', {}));
@@ -5598,6 +5620,12 @@ function Disponibilidad({
   const [mHastaHora, setMHastaHora] = useState('15:00');
   const [mDias, setMDias] = useState([]);
   const [mAplicando, setMAplicando] = useState(false);
+  useEffect(() => {
+    if (abrirMasivas) {
+      setTab('bloquear');
+      setMasivasOpen(true);
+    }
+  }, [abrirMasivas]);
   const DIAS_SEMANA = [['Lunes', 1], ['Martes', 2], ['Miércoles', 3], ['Jueves', 4], ['Viernes', 5], ['Sábado', 6], ['Domingo', 0]];
   const fechaCorta = d => {
     const x = new Date(d + 'T12:00:00');
@@ -7353,6 +7381,7 @@ function App() {
   });
   const [page, setPage] = useState('dashboard');
   const [navOpen, setNavOpen] = useState(false);
+  const [abrirMasivas, setAbrirMasivas] = useState(0);
   const [professors, setProfessors] = useState(() => load('crm_professors_v3', PROFESSORS));
   const [vehicles, setVehicles] = useState(() => load('crm_vehicles_v3', VEHICLES));
   const [students, setStudents] = useState(() => load('crm_students_v3', null) || (getSupabase() ? [] : seedStudents()));
@@ -7815,12 +7844,17 @@ function App() {
       setSlots: setSlots,
       vehicles: vehicles,
       examDays: examDays,
-      setExamDays: setExamDays
+      setExamDays: setExamDays,
+      onAccionesMasivas: () => {
+        setAbrirMasivas(Date.now());
+        setPage('disponibilidad');
+      }
     }),
     disponibilidad: React.createElement(Disponibilidad, {
       ...shared,
       slots: slots,
-      setSlots: setSlots
+      setSlots: setSlots,
+      abrirMasivas: abrirMasivas
     }),
     profesores: React.createElement(Profesores, {
       ...shared,
