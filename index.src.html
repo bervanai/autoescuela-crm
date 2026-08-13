@@ -2551,8 +2551,11 @@ function Disponibilidad({user,professors,slots,setSlots}){
   function horasDelRango(ini,fin){
     const a=hhmmToMin(ini),b=hhmmToMin(fin);
     const lo=Math.min(a,b),hi=Math.max(a,b);
-    // El fin es inclusivo salvo que se marque la misma hora
-    return AVAIL_HOURS.filter(h=>{const m=hhmmToMin(h);return m>=lo&&m<=hi;});
+    // El "hasta" es la hora a la que el profesor VUELVE: bloquear de 9:00 a
+    // 15:00 deja libre la clase que empieza a las 15:00, igual que se entiende
+    // al hablar. La de 14:45 sí queda bloqueada, porque acabaría a las 15:30.
+    if(lo===hi) return AVAIL_HOURS.filter(h=>hhmmToMin(h)===lo);
+    return AVAIL_HOURS.filter(h=>{const m=hhmmToMin(h);return m>=lo&&m<hi;});
   }
   function aplicarRango(bloquear){
     const horas=horasDelRango(rangoIni,rangoFin);
@@ -2834,8 +2837,9 @@ function Disponibilidad({user,professors,slots,setSlots}){
                   fontSize:13,fontWeight:600,cursor:'pointer'}}>
                 Desbloquear
               </button>
-              <div style={{fontSize:11,color:'#94a3b8',flex:1,minWidth:180}}>
-                Ej.: de 09:00 a 15:00. También puedes pulsar el nombre de un día para bloquearlo entero.
+              <div style={{fontSize:11,color:'#94a3b8',flex:1,minWidth:200}}>
+                El <strong>hasta</strong> es la hora a la que vuelve: de 09:00 a 15:00 deja libre la clase de las 15:00.
+                También puedes pulsar el nombre de un día para bloquearlo entero.
               </div>
             </div>
             <div className="avail-scroll" style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,overflow:'hidden'}}>

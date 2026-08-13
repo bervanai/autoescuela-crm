@@ -5445,9 +5445,10 @@ function Disponibilidad({
       b = hhmmToMin(fin);
     const lo = Math.min(a, b),
       hi = Math.max(a, b);
+    if (lo === hi) return AVAIL_HOURS.filter(h => hhmmToMin(h) === lo);
     return AVAIL_HOURS.filter(h => {
       const m = hhmmToMin(h);
-      return m >= lo && m <= hi;
+      return m >= lo && m < hi;
     });
   }
   function aplicarRango(bloquear) {
@@ -6004,9 +6005,9 @@ function Disponibilidad({
       fontSize: 11,
       color: '#94a3b8',
       flex: 1,
-      minWidth: 180
+      minWidth: 200
     }
-  }, "Ej.: de 09:00 a 15:00. También puedes pulsar el nombre de un día para bloquearlo entero.")), React.createElement("div", {
+  }, "El ", React.createElement("strong", null, "hasta"), " es la hora a la que vuelve: de 09:00 a 15:00 deja libre la clase de las 15:00. También puedes pulsar el nombre de un día para bloquearlo entero.")), React.createElement("div", {
     className: "avail-scroll",
     style: {
       background: '#fff',
