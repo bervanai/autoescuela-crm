@@ -2438,7 +2438,7 @@ function defaultAvail(){
   return a;
 }
 
-function Disponibilidad({user,professors,slots,setSlots}){
+function Disponibilidad({user,professors,students,slots,setSlots}){
   // Con Supabase, la nube es la fuente: empezar vacío y esperar al pull
   const [avail,setAvail]=useState(()=>load('crm_avail_v1',null)||(getSupabase()?{}:defaultAvail()));
   const [blocked,setBlocked]=useState(()=>load('crm_blocked_v1',{}));
@@ -2528,8 +2528,22 @@ function Disponibilidad({user,professors,slots,setSlots}){
   const nextWeek=getNextWeekDates();
 
   function toggleBlock(date,hour){
-    lastEdit.current=Date.now();
     const key=`${viewProf}_${date}_${hour}`;
+    const yaBloqueada=!!blocked[key];
+    // Si esa hora choca con una clase, se avisa al alumno y se cancela: el
+    // admin decide, y ninguna hora se queda a medias.
+    if(!yaBloqueada){
+      const afectadas=clasesQueChocan([date],[hour]);
+      if(afectadas.length){
+        const stu=(students||[]).find(x=>x.id===afectadas[0][0].studentId);
+        if(!window.confirm(
+          `Esa hora choca con la clase de ${stu?stu.name:'un alumno'} ` +
+          `(${horasBloque(afectadas[0])}).\n\n` +
+          `Se CANCELARÁ y se le avisará por WhatsApp. ¿Continuar?`)) return;
+        cancelaBloques(afectadas);
+      }
+    }
+    lastEdit.current=Date.now();
     setBlocked(prev=>{
       const next={...prev};
       if(next[key]) delete next[key];
@@ -2540,6 +2554,164 @@ function Disponibilidad({user,professors,slots,setSlots}){
   }
   function isBlocked(date,hour){
     return !!blocked[`${viewProf}_${date}_${hour}`];
+  }
+  // ── Bloqueo por RANGO de horas y por DÍA entero ──────────────────────────
+  // Antes había que ir hora por hora (la rejilla es de 15 min: 60 casillas por
+  // día). Con esto se marca "de 9:00 a 15:00" de una vez, en un día o en toda
+  // la semana. Ninguna hora se queda sin bloquear: si hay clases dentro, se
+  // avisa al alumno de la cancelación (con su horario) y se quitan.
+  const [rangoDia,setRangoDia]=useState('todos');
+  const [rangoIni,setRangoIni]=useState('09:00');
+  const [rangoFin,setRangoFin]=useState('15:00');
+  const minHHMM=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+  function horasDelRango(ini,fin){
+    const a=hhmmToMin(ini),b=hhmmToMin(fin);
+    const lo=Math.min(a,b),hi=Math.max(a,b);
+    // El "hasta" es la hora a la que el profesor VUELVE: bloquear de 9:00 a
+    // 15:00 deja libre la clase que empieza a las 15:00, igual que se entiende
+    // al hablar. La de 14:45 sí queda bloqueada, porque acabaría a las 15:30.
+    if(lo===hi) return AVAIL_HOURS.filter(h=>hhmmToMin(h)===lo);
+    return AVAIL_HOURS.filter(h=>{const m=hhmmToMin(h);return m>=lo&&m<hi;});
+  }
+  // Avisa al alumno de que su clase se cancela. Manda inicio y fin para que una
+  // clase doble se entienda ("de 11:00 a 12:30") en vez de parecer media.
+  const avisaCancelada=async(bloque)=>{
+    const first=bloque[0]; if(!first||!first.studentId)return;
+    const stu=(students||[]).find(s=>s.id===first.studentId);
+    const url=(loadSchool().botUrl||'').replace(/\/$/,'');
+    if(!stu||!url)return;
+    const last=bloque[bloque.length-1];
+    const fin=minHHMM(hhmmToMin(last.time)+(last.duration||45));
+    const dayName=new Date(first.date+'T12:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+    try{
+      await fetch(`${url}/api/notify-cancel`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({studentId:stu.id,name:stu.name,date:first.date,
+          time:String(first.time).substring(0,5),end:fin,dayName}),
+        signal:AbortSignal.timeout(6000)});
+    }catch(e){/* si el bot no responde, la clase se cancela igual */}
+  };
+  // "11:00 → 12:30" (una doble se lee entera, no como dos clases sueltas)
+  const horasBloque=b=>{
+    const last=b[b.length-1];
+    return `${String(b[0].time).substring(0,5)} → ${minHHMM(hhmmToMin(last.time)+(last.duration||45))}`;
+  };
+  // Cancela los bloques afectados: un aviso por clase (doble incluida) y fuera
+  // del horario. Se borran DESPUÉS de avisar, con los datos ya leídos.
+  const cancelaBloques=bloques=>{
+    bloques.forEach(b=>avisaCancelada(b));
+    const ids=new Set(bloques.flat().map(s=>s.id));
+    setSlots(ss=>{const n={...ss};ids.forEach(id=>{delete n[id];});return n;});
+  };
+  // Una clase doble son DOS clases de 45 min seguidas del mismo alumno. Esto
+  // las junta para tratarlas como una sola: se cancela entera y se avisa una
+  // vez ("de 11:00 a 12:30"), no media clase ni dos mensajes.
+  function bloqueDe(sl,arr){
+    if(!sl||!sl.studentId)return sl?[sl]:[];
+    const same=arr.filter(s=>s.id!==sl.id&&s.studentId===sl.studentId
+      &&s.profId===sl.profId&&s.date===sl.date&&s.slotType===sl.slotType&&s.status!=='cancelled');
+    const chain=[sl];
+    for(;;){
+      const ini=hhmmToMin(chain[0].time);
+      const prev=same.find(s=>!chain.includes(s)&&hhmmToMin(s.time)+(s.duration||45)===ini);
+      if(!prev)break; chain.unshift(prev);
+    }
+    for(;;){
+      const last=chain[chain.length-1];
+      const fin=hhmmToMin(last.time)+(last.duration||45);
+      const next=same.find(s=>!chain.includes(s)&&hhmmToMin(s.time)===fin);
+      if(!next)break; chain.push(next);
+    }
+    return chain;
+  }
+  // Clases con alumno que CHOCAN con el rango (incluidas las que lo invaden
+  // por delante: una de 08:45 termina a las 09:30 y pisa un bloqueo de 09:00).
+  // Devuelve BLOQUES: si media clase doble entra en el rango, cae la doble
+  // entera, porque no puede quedarse a medias.
+  function clasesQueChocan(dias,horas){
+    const set=new Set(horas);
+    const arr=(Array.isArray(slots)?slots:Object.values(slots||{}))
+      .filter(s=>s&&s.id&&s.profId===viewProf&&s.status!=='cancelled');
+    const tocadas=arr.filter(s=>{
+      if(!s.studentId)return false;
+      if(!dias.includes(s.date))return false;
+      const ini=hhmmToMin(s.time),dur=s.duration||45;
+      for(let m=ini;m<ini+dur;m+=15){ if(set.has(minHHMM(m)))return true; }
+      return false;
+    });
+    const vistos=new Set(),bloques=[];
+    tocadas.forEach(s=>{
+      if(vistos.has(s.id))return;
+      const chain=bloqueDe(s,arr);
+      chain.forEach(x=>vistos.add(x.id));
+      bloques.push(chain);
+    });
+    return bloques.sort((a,b)=>(a[0].date+a[0].time).localeCompare(b[0].date+b[0].time));
+  }
+  function aplicarRango(bloquear){
+    const horas=horasDelRango(rangoIni,rangoFin);
+    const dias=rangoDia==='todos'?nextWeek.map(w=>w.date):[rangoDia];
+    if(!horas.length){alert('Ese rango no incluye ninguna hora.');return;}
+
+    if(bloquear){
+      // Si hay clases dentro, NO se dejan sin bloquear: se cancelan y se avisa
+      // al alumno, que es lo que decide el admin desde aquí.
+      const afectadas=clasesQueChocan(dias,horas);
+      if(afectadas.length){
+        const lista=afectadas.slice(0,10).map(b=>{
+          const stu=(students||[]).find(x=>x.id===b[0].studentId);
+          return `• ${b[0].date.slice(8)}/${b[0].date.slice(5,7)}  ${horasBloque(b)}  ${stu?stu.name:'(alumno)'}`;
+        }).join('\n');
+        if(!window.confirm(
+          `Hay ${afectadas.length} clase(s) con alumno en ese rango:\n\n${lista}` +
+          (afectadas.length>10?`\n… y ${afectadas.length-10} más`:'') +
+          `\n\nSe CANCELARÁN y se avisará a cada alumno por WhatsApp.\n\n` +
+          `Si prefieres moverlas de hora en vez de cancelarlas, hazlo antes desde el Horario ` +
+          `(al arrastrarlas se avisa al alumno con el nuevo horario).\n\n¿Continuar?`)) return;
+        cancelaBloques(afectadas);
+      }
+    }
+
+    lastEdit.current=Date.now();
+    setBlocked(prev=>{
+      const next={...prev};
+      dias.forEach(date=>horas.forEach(hour=>{
+        const key=`${viewProf}_${date}_${hour}`;
+        if(bloquear) next[key]={profId:viewProf,date,hour,blockedAt:Date.now()};
+        else delete next[key];
+      }));
+      return next;
+    });
+    setSaved(false);
+  }
+  // Día entero: mismo criterio que el rango. Si hay clases dentro se cancelan
+  // y se avisa al alumno; el día queda bloqueado completo, sin huecos sueltos.
+  function toggleDiaEntero(date){
+    const todoBloqueado=AVAIL_HOURS.every(h=>isBlocked(date,h));
+    if(todoBloqueado){
+      lastEdit.current=Date.now();
+      setBlocked(prev=>{const n={...prev};AVAIL_HOURS.forEach(h=>{delete n[`${viewProf}_${date}_${h}`];});return n;});
+      setSaved(false);
+      return;
+    }
+    const afectadas=clasesQueChocan([date],AVAIL_HOURS);
+    if(afectadas.length){
+      const lista=afectadas.slice(0,10).map(b=>{
+        const stu=(students||[]).find(x=>x.id===b[0].studentId);
+        return `• ${horasBloque(b)}  ${stu?stu.name:'(alumno)'}`;
+      }).join('\n');
+      if(!window.confirm(
+        `Bloquear el día entero afecta a ${afectadas.length} clase(s):\n\n${lista}` +
+        (afectadas.length>10?`\n… y ${afectadas.length-10} más`:'') +
+        `\n\nSe CANCELARÁN y se avisará a cada alumno por WhatsApp.\n\n¿Continuar?`)) return;
+      cancelaBloques(afectadas);
+    }
+    lastEdit.current=Date.now();
+    setBlocked(prev=>{
+      const n={...prev};
+      AVAIL_HOURS.forEach(h=>{n[`${viewProf}_${date}_${h}`]={profId:viewProf,date,hour:h,blockedAt:Date.now()};});
+      return n;
+    });
+    setSaved(false);
   }
   function hasSlotBooked(date,hour){
     if(!slots) return false;
@@ -2752,18 +2924,63 @@ function Disponibilidad({user,professors,slots,setSlots}){
               marginBottom:16,display:'flex',alignItems:'center',gap:8,fontSize:13,color:'#856404'}}>
               <Icon name="warning" size={16}/>
               Las horas marcadas como <strong>bloqueadas</strong> no estarán disponibles para reservar la semana siguiente.
-              Las horas que ya tienen alumno aparecen en gris y no se pueden modificar.
+              Las horas que ya tienen alumno salen en gris: si las bloqueas, se avisa al alumno por WhatsApp de que su clase queda cancelada.
+            </div>
+            {/* Bloqueo por rango: evita ir casilla por casilla (60 por día) */}
+            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 16px',
+              marginBottom:14,display:'flex',alignItems:'flex-end',gap:10,flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,marginBottom:3}}>DÍA</div>
+                <select className={inp} style={{width:150}} value={rangoDia} onChange={e=>setRangoDia(e.target.value)}>
+                  <option value="todos">Toda la semana</option>
+                  {nextWeek.map(wd=><option key={wd.date} value={wd.date}>{wd.label} {wd.date.slice(8)}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,marginBottom:3}}>DESDE</div>
+                <select className={inp} style={{width:96}} value={rangoIni} onChange={e=>setRangoIni(e.target.value)}>
+                  {AVAIL_HOURS.map(h=><option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,marginBottom:3}}>HASTA</div>
+                <select className={inp} style={{width:96}} value={rangoFin} onChange={e=>setRangoFin(e.target.value)}>
+                  {AVAIL_HOURS.map(h=><option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+              <button onClick={()=>aplicarRango(true)}
+                style={{padding:'8px 14px',borderRadius:8,border:'none',background:'#ef4444',color:'#fff',
+                  fontSize:13,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}>
+                <Icon name="block" size={16}/>Bloquear rango
+              </button>
+              <button onClick={()=>aplicarRango(false)}
+                style={{padding:'8px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'#fff',color:'#475569',
+                  fontSize:13,fontWeight:600,cursor:'pointer'}}>
+                Desbloquear
+              </button>
+              <div style={{fontSize:11,color:'#94a3b8',flex:1,minWidth:200}}>
+                El <strong>hasta</strong> es la hora a la que vuelve: de 09:00 a 15:00 deja libre la clase de las 15:00.
+                También puedes pulsar el nombre de un día para bloquearlo entero.
+              </div>
             </div>
             <div className="avail-scroll" style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,overflow:'hidden'}}>
               <div className="avail-grid">
               <div style={{display:'grid',gridTemplateColumns:'72px repeat(6,1fr)',background:'#f8f9ff',borderBottom:'1px solid #e2e8f0'}}>
                 <div style={{padding:'10px 10px',fontSize:10,color:'#94a3b8',fontWeight:600}}>HORA</div>
-                {nextWeek.map(wd=>(
-                  <div key={wd.date} style={{padding:'7px 4px',textAlign:'center',borderLeft:'1px solid #e2e8f0'}}>
-                    <div style={{fontSize:11,fontWeight:600,color:'#091426'}}>{wd.label}</div>
+                {nextWeek.map(wd=>{
+                  const diaBloqueado=AVAIL_HOURS.every(h=>isBlocked(wd.date,h));
+                  return(
+                  <div key={wd.date} onClick={()=>toggleDiaEntero(wd.date)}
+                    title={diaBloqueado?'Pulsa para desbloquear el día entero':'Pulsa para bloquear el día entero'}
+                    style={{padding:'7px 4px',textAlign:'center',borderLeft:'1px solid #e2e8f0',cursor:'pointer',
+                      background:diaBloqueado?'#fee2e2':'transparent'}}>
+                    <div style={{fontSize:11,fontWeight:600,color:diaBloqueado?'#ef4444':'#091426'}}>
+                      {diaBloqueado?'🚫 ':''}{wd.label}
+                    </div>
                     <div style={{fontSize:10,color:'#94a3b8'}}>{wd.date.slice(5).replace('-','/')}</div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
               {AVAIL_HOURS.map((hour,hi)=>(
                 <div key={hour} style={{display:'grid',gridTemplateColumns:'72px repeat(6,1fr)',
@@ -2775,9 +2992,9 @@ function Disponibilidad({user,professors,slots,setSlots}){
                     const blk=isBlocked(wd.date,hour);
                     return(
                       <div key={wd.date} style={{borderLeft:'1px solid #f1f5f9',padding:3,display:'flex',alignItems:'center',justifyContent:'center'}}>
-                        <button onClick={()=>!booked&&toggleBlock(wd.date,hour)}
-                          disabled={booked}
-                          title={booked?'Hora ya reservada por un alumno':blk?'Click para desbloquear':'Click para bloquear'}
+                        <button onClick={()=>toggleBlock(wd.date,hour)}
+                          title={booked?'Hora con alumno: al bloquearla se cancela y se le avisa'
+                                :blk?'Click para desbloquear':'Click para bloquear'}
                           style={{width:'100%',height:32,borderRadius:6,border:'2px solid',
                             cursor:booked?'not-allowed':'pointer',transition:'all .15s',fontWeight:700,fontSize:10,
                             borderColor:booked?'#e2e8f0':blk?'#ef4444':'#e2e8f0',
