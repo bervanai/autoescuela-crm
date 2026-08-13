@@ -829,6 +829,14 @@ function isNo(t) {
   const n = norm(t);
   return ['no','no puedo','no me viene','imposible','otro','otra','cambia','diferente'].some(w => n.startsWith(w) || n === w);
 }
+// "otro día", "otra fecha", "siguiente"… El alumno quiere VER otro día, no
+// terminar. Va aparte de isNo() porque isNo() también da true con "otro" y eso
+// hacía que un "otro día" tras reservar se leyera como "no quiero más clases".
+function pideOtroDia(t) {
+  const n = norm(t);
+  return /^(otro|otra)\b/.test(n) ||
+         /(otro dia|otra fecha|otros dias|mas dias|siguiente|proxim)/.test(n);
+}
 function isDone(t) {
   const n = norm(t);
   return ['listo','gracias','ya esta','ya está','fin','nada mas','nada más','suficiente',
@@ -1488,6 +1496,38 @@ app.post('/bot', async (req, res) => {
     done(); return;
   }
 
+  // ── "¿qué clases tengo?" → enseñar sus reservas ───────
+  // Va aquí arriba, ANTES de repartir por tipo de conversación: si el alumno
+  // tenía un hilo abierto, esto se quedaba sin atender y le contestaba con el
+  // menú de horas. Las palabras clave van con LÍMITE de palabra: sin él,
+  // "Quería pedir clase…" contenía "que" dentro de "quería" (caso real).
+  // Y "quiero ver mis clases" lleva "quiero", así que la exclusión de reserva
+  // se levanta cuando dice "mis clases" o "tengo" (caso real de hoy).
+  {
+    const t0 = norm(body);
+    const pideReserva  = /\b(pedir|reservar|coger|quiero|queria|querria|dame|apunta)\b/.test(t0);
+    const quiereVerlas = /\bmis clases?\b/.test(t0) || /\btengo\b/.test(t0);
+    if (/\bclases?\b/.test(t0) && /\b(mis|ver|que|cuando|tengo)\b/.test(t0)
+        && !/cancel|anula/.test(t0)
+        && !parseBookingText(body).hour        // "clase el lunes a las 10" es reservar
+        && (!pideReserva || quiereVerlas)) {
+      const stQ = (await loadStudents()).find(s => s.phone === from && s.active);
+      if (stQ) {
+        const mine = await upcomingSlotsFor(stQ.id);
+        if (!mine.length) {
+          await sendWA(from, `Hola ${stQ.name} 👋 No tienes clases reservadas ahora mismo. Escríbeme *hola* y organizamos tu semana.`);
+        } else {
+          await sendWA(from,
+            `📋 *Tus próximas clases:*\n` +
+            mine.map(s => `• ${slotLabel(s)}`).join('\n') +
+            `\n\nPara anular o cambiar alguna, escribe o llama a la oficina: *${OFFICE_PHONE}*.`
+          );
+        }
+        done(); return;
+      }
+    }
+  }
+
   // ── Clase DOBLE: el alumno quiere 90 min = dos clases seguidas de 45 ──
   // Reconoce "doble", "dos horas", etc. Si el alumno indica DÍA y HORA en el
   // mensaje (p.ej. "miércoles 9:30 doble") se reservan esas dos medias horas
@@ -1569,32 +1609,10 @@ app.post('/bot', async (req, res) => {
     }
 
     const profId = st.profId ?? st.prof_id;
-    const t0 = norm(body);
-
-    // ── "¿qué clases tengo?": consultar reservas ──
-    // Consulta "¿qué clases tengo?". Las palabras clave van con LÍMITE de
-    // palabra: sin él, "Quería pedir clase..." contenía "que" dentro de
-    // "quería" y se respondía con el listado en vez de ofrecer hora (caso
-    // real). Y si pide hora o día explícitos, es una reserva, no una consulta.
-    if (/\bclases?\b/.test(t0) && /\b(mis|ver|que|qué|cuando|cuándo|tengo)\b/.test(t0)
-        && !/cancel|anula/.test(t0)
-        && !/\b(pedir|reservar|coger|quiero|queria|querría|dame|apunta)\b/.test(t0)) {
-      const mine = await upcomingSlotsFor(st.id);
-      if (!mine.length) {
-        await sendWA(from, `Hola ${st.name} 👋 No tienes clases reservadas ahora mismo. Escríbeme *hola* y organizamos tu semana.`);
-      } else {
-        await sendWA(from,
-          `📋 *Tus próximas clases:*\n` +
-          mine.map(s => `• ${slotLabel(s)}`).join('\n') +
-          `\n\nPara anular o cambiar alguna, escribe o llama a la oficina: *${OFFICE_PHONE}*.`
-        );
-      }
-      done();
-      return;
-    }
 
     // Nota: "cancelar/anular/quitar" ya se atiende antes, en el bloque de
     // cancelación global, que deriva al móvil de la oficina. Aquí no hace falta.
+    // La consulta "¿qué clases tengo?" también se atiende antes, arriba.
 
     // Solo arrancamos la propuesta si el alumno REALMENTE quiere reservar.
     // Un "gracias/ok/perfecto" o un mensaje suelto no debe reproponer clases.
@@ -1616,16 +1634,37 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
-    const day0 = daysWithSlots(free)[0];
+    // No empezar por un día en el que el alumno YA tiene clase: el flujo de
+    // abajo los descarta, así que si no se descartan aquí el primer menú
+    // enseñaría un día que luego no existe.
+    const yaOcupados = (await upcomingSlotsFor(st.id, 30)).map(s => String(s.date).substring(0, 10));
+    const diasLibres = daysWithSlots(free, yaOcupados);
+    if (!diasLibres.length) {
+      const lista = await listaClasesAlumno(st.id);
+      await sendWA(from, `Hola ${st.name} 👋 Ya tienes clase todos los días con hueco de la semana que viene 👌` +
+        (lista ? `\n\n📋 *Tus clases:*\n${lista}` : '') +
+        `\n\nSi necesitas algo más, llama a la autoescuela. 📞`);
+      done();
+      return;
+    }
+    const day0 = diasLibres[0];
     const st2 = makeSuggestState({ ...st, profId }, free, true, pistaHours);
     st2.currentDate = day0.date;
     pending[from] = st2;
-    await sendWA(from,
-      `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*. Vamos a organizar tus clases de la semana que viene.\n\n` +
-      dayMenuMessage(day0, '')
-    );
-    done();
-    return;
+
+    // Si el alumno arranca escribiendo una HORA ("14:00"), se atiende esa hora
+    // en el acto. Antes se le enseñaba el menú y su hora se perdía: tenía que
+    // volver a navegar y repetirla (caso real de hoy).
+    if (parseBookingText(body).hour) {
+      state = st2;              // sigue abajo, al flujo de sugerencia
+    } else {
+      await sendWA(from,
+        `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*. Vamos a organizar tus clases de la semana que viene.\n\n` +
+        dayMenuMessage(day0, '')
+      );
+      done();
+      return;
+    }
   }
 
   // ── Conversación expirada ─────────────────────────────
@@ -1677,8 +1716,15 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
-    // Huecos libres actuales, agrupados por día (excluyendo los ya reservados)
-    const bookedDates = (state.booked || []).map(b => b.date);
+    // Huecos libres actuales, agrupados por día (excluyendo los ya reservados).
+    // Cuentan TAMBIÉN las clases que el alumno ya tiene en la base, no solo las
+    // de esta conversación: si cierra el chat y vuelve a escribir, antes se le
+    // reofrecía un día en el que ya tenía clase (caso real de hoy).
+    const misClases = await upcomingSlotsFor(state.studentId, 30);
+    const bookedDates = [...new Set([
+      ...(state.booked || []).map(b => String(b.date).substring(0, 10)),
+      ...misClases.map(s => String(s.date).substring(0, 10)),
+    ])];
     const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType, nextWeekLastDate());
     const days = daysWithSlots(allFree, bookedDates);
 
@@ -1686,7 +1732,12 @@ app.post('/bot', async (req, res) => {
       delete pending[from];
       const lista = await listaClasesAlumno(state.studentId);
       const yaTiene = lista ? `\n\n📋 *Tus clases:*\n${lista}` : '';
-      await sendWA(from, `No quedan más huecos libres esta semana.${yaTiene}\n\nSi necesitas algo más, llama a la autoescuela. 📞`);
+      // Si el alumno YA tiene clase todos los días con hueco, decírselo tal
+      // cual: "no quedan huecos" sonaba a que la autoescuela está llena.
+      const cabecera = lista
+        ? `Ya tienes clase todos los días con hueco de la semana que viene 👌`
+        : `No quedan más huecos libres esta semana.`;
+      await sendWA(from, `${cabecera}${yaTiene}\n\nSi necesitas algo más, llama a la autoescuela. 📞`);
       done();
       return;
     }
@@ -1702,7 +1753,10 @@ app.post('/bot', async (req, res) => {
     // Un "no" JUSTO DESPUÉS de reservar significa "no quiero más clases", no
     // "enséñame otro día". Antes encadenaba días y el alumno acababa
     // reservando de más a base de decir que no.
-    if (state.justBooked && !hour && !domDay && (isNo(body) || isDone(body))) {
+    // Ojo: "otro día" NO cierra. isNo() da true con cualquier cosa que empiece
+    // por "otro", así que un alumno que pedía otro día tras reservar recibía el
+    // resumen de cierre (caso real de hoy: pasó 3 veces en la misma charla).
+    if (state.justBooked && !hour && !domDay && !pideOtroDia(body) && (isNo(body) || isDone(body))) {
       delete pending[from];
       const resumen = await listaClasesAlumno(state.studentId);
       await sendWA(from,
@@ -1746,7 +1800,7 @@ app.post('/bot', async (req, res) => {
     // Antes solo se saltaba el día actual → hacía ping-pong entre 2 días.
     // Ahora avanza por índice; cuando ya se han visto todos, se enseñan todos
     // los días de golpe y se avisa de que no hay más.
-    if (!hour && !domDay && (isNo(body) || /siguiente|otro dia|proxim|otra fecha|mas dias/.test(norm(body)))) {
+    if (!hour && !domDay && (isNo(body) || pideOtroDia(body))) {
       state.justBooked = false;
       const idx = days.findIndex(d => d.date === state.currentDate);
       if (idx >= 0 && idx + 1 < days.length) {
@@ -1828,7 +1882,9 @@ app.post('/bot', async (req, res) => {
           done();
           return;
         }
-        const nextDay = remaining.find(d => d.date !== match.date) || remaining[0];
+        // Avanzar al día SIGUIENTE al reservado, no al primero de la lista:
+        // si no, tras reservar el martes se volvía a proponer el lunes.
+        const nextDay = remaining.find(d => d.date > match.date) || remaining[0];
         state.currentDate = nextDay.date;
         state.justBooked = true;   // un "no" ahora significa "no quiero más"
         await sendWA(from,
@@ -1842,7 +1898,7 @@ app.post('/bot', async (req, res) => {
 
       // La hora pedida no está entre las libres de ese día
       if (dayObj) {
-        await sendWA(from, `Esa hora no está libre el ${dayObj.dayName}. 🤔\n\n` + dayMenuMessage(dayObj, ''));
+        await sendWA(from, `Las ${hh}h no están libres el ${dayObj.dayName} ${formatDate(dayObj.date)}. 🤔\n\n` + dayMenuMessage(dayObj, ''));
       } else {
         const d0 = days[0];
         state.currentDate = d0.date;
@@ -2107,7 +2163,12 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType, nextWeekLastDate());
   if (!free.length) return res.status(409).json({ error: 'No hay huecos disponibles para este profesor' });
 
-  const day0 = daysWithSlots(free)[0];
+  // Sin los días en los que el alumno ya tiene clase: el flujo los descarta,
+  // así que enseñarlos aquí sería ofrecerle un día que luego no existe.
+  const yaOcupados = (await upcomingSlotsFor(st.id, 30)).map(s => String(s.date).substring(0, 10));
+  const diasLibres = daysWithSlots(free, yaOcupados);
+  if (!diasLibres.length) return res.status(409).json({ error: 'Ese alumno ya tiene clase todos los días con hueco de la semana que viene' });
+  const day0 = diasLibres[0];
   const msg =
     `Hola ${st.name} 👋 Soy el asistente de *${SCHOOL_NAME}*.\n\n` +
     `Vamos a organizar tus clases de la semana que viene.\n\n` +
