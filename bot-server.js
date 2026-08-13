@@ -1297,6 +1297,14 @@ async function bookSlot(studentId, studentName, profId, slot, bookerVehType = nu
     console.error(`❌ Reserva NO guardada (se solapa con otra clase): ${studentName} → ${slot.date} ${slot.time}`);
     return null;
   }
+  // Última barrera contra las horas BLOQUEADAS por el admin. Los flujos ya
+  // filtran antes, pero entre ofrecer la hora y guardarla el admin puede haber
+  // bloqueado ese rango. Aquí no se reserva ni por error.
+  const bloqueadas = await loadBlocked();
+  if (isBlockedSlotSync(bloqueadas, profId, slot.date, String(slot.time).substring(0,5))) {
+    console.error(`❌ Reserva NO guardada (hora bloqueada por la autoescuela): ${studentName} → ${slot.date} ${slot.time}`);
+    return null;
+  }
   // Pedro: no reservar pegado a una clase de otro vehículo (necesita 15 min
   // para el cambio de coche). Solo Pedro y solo fechas futuras.
   if (profId === PEDRO_ID && isFutureLocalDate(slot.date)) {
