@@ -43,6 +43,16 @@ function cancelRedirectMsg(name) {
   );
 }
 
+// El plazo de reserva va de martes a jueves. A partir de las 00:01 del viernes
+// está cerrado: el bot NO abre conversación de reserva hasta el martes.
+function fueraDePlazoMsg(name) {
+  return (
+    `Hola${name ? ' ' + name : ''} 👋 El plazo para reservar las clases de la semana que viene ya está *cerrado*.\n\n` +
+    `📅 Se abre cada *martes*: te escribo yo y las organizamos.\n\n` +
+    `Si necesitas algo antes, llama a la oficina: *${OFFICE_PHONE}*.`
+  );
+}
+
 // ── Nombre de la escuela (leído de Supabase, con fallback) ──
 let SCHOOL_NAME = process.env.SCHOOL_NAME || 'Autoescuela Exit';
 async function refreshSchoolName() {
@@ -859,6 +869,9 @@ function isSoftAck(t) {
 function wantsBooking(body) {
   const p = parseBookingText(body);
   if (p.dow || p.hour) return true;
+  // "otro día" tras cerrar la conversación es querer seguir reservando. Antes
+  // recibía la despedida y tenía que escribir "hola" para volver a empezar.
+  if (pideOtroDia(body)) return true;
   const n = norm(body);
   return /(hola|buenas|hey|holi|saludos|reserv|cita|apunt|conducir|practic|clase|coche|empez|empiez|organiz|quiero|queria|querria|necesito|me gustaria|puedo|podria|disponib|hueco|horario|semana|dame|ponme)/.test(n);
 }
@@ -1658,6 +1671,17 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
+    // Fuera del plazo (de las 00:01 del viernes hasta el martes): no se abre
+    // conversación de reserva. Caso real: un alumno reservó 5 clases a las
+    // 00:01 del viernes, con el plazo ya cerrado desde las 23:59.
+    // Los recordatorios, las cancelaciones y "¿qué clases tengo?" se atienden
+    // antes que esto, así que siguen funcionando cualquier día.
+    if (!bookingWindowOpen()) {
+      await sendWA(from, fueraDePlazoMsg(st.name));
+      done();
+      return;
+    }
+
     const nextMon = ymdLocal(nextWeekMonday());
     const pistaHours = await pistaFilterFor(st);
     const free = await nextFreeSlots(profId, 80, nextMon, pistaHours, st.vehicleType, nextWeekLastDate());
@@ -1708,6 +1732,17 @@ app.post('/bot', async (req, res) => {
     return;
   }
 
+  // ── Plazo cerrado con la conversación aún abierta ─────
+  // El cron del jueves a las 23:59 cierra los hilos, pero si el bot estaba
+  // reiniciándose en ese minuto no se ejecuta y el hilo llega al viernes. Aquí
+  // se corta igualmente: fuera de plazo no se reserva.
+  if (state.type === 'suggest' && !bookingWindowOpen()) {
+    delete pending[from];
+    await sendWA(from, fueraDePlazoMsg(state.studentName));
+    done();
+    return;
+  }
+
   // ── FLUJO: Cancelación (heredado) ─────────────────────
   // Ya no se crean estados de este tipo: las cancelaciones las gestiona la
   // oficina. Se conserva para atender con sentido las conversaciones que
@@ -1736,9 +1771,14 @@ app.post('/bot', async (req, res) => {
   // ── FLUJO: Sugerencia ─────────────────────────────────
   if (state.type === 'suggest') {
     const yaHechas = state.booked || [];
+    // Si el mensaje trae una HORA, manda la hora aunque también diga "listo".
+    // Caso real: una alumna escribió "9:00 listo" y el bot cerró sin reservar
+    // las 9:00. Ahora se reserva y, al terminar, se cierra igualmente.
+    const pideHora = parseBookingText(body);
+    const cierraDespues = !!(pideHora.hour && isDone(body));
     // Cierre explícito ("listo/gracias/adiós"), o reconocimiento suave
     // ("ok/perfecto") cuando ya hay clases hechas → terminar sin re-preguntar.
-    if (isDone(body) || (isSoftAck(body) && yaHechas.length)) {
+    if (!pideHora.hour && (isDone(body) || (isSoftAck(body) && yaHechas.length))) {
       delete pending[from];
       const lista = await listaClasesAlumno(state.studentId);
       const resumen = lista
@@ -1912,6 +1952,16 @@ app.post('/bot', async (req, res) => {
         if (!remaining.length) {
           delete pending[from];
           await sendWA(from, `✅ ¡Reservada! *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n📋 *Tus clases:*\n${resumen}\n\nNo quedan más días libres. ¡Listo! 👌`);
+          done();
+          return;
+        }
+        // El mensaje traía hora Y despedida ("9:00 listo"): se reserva y se
+        // cierra, sin volver a ofrecerle otro día que no ha pedido.
+        if (cierraDespues) {
+          delete pending[from];
+          await sendWA(from,
+            `✅ ¡Reservada! *${match.dayName} ${formatDate(match.date)} a las ${match.time}h*\n\n` +
+            `📋 *Tus clases reservadas:*\n${resumen}\n\nTe recordaremos cada una 48h antes. 🚗`);
           done();
           return;
         }
