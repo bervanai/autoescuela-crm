@@ -1195,6 +1195,22 @@ async function sendBookingRequests(force = false) {
   // campaña por una conversación vieja que ya no está viva.
   await purgeExpiredPending();
 
+  // Además: cualquier hilo de tipo "suggest" que quede colgado se limpia
+  // igual, sin mirar su caducidad. thuExpiry() calcula "el próximo jueves"
+  // desde el momento en que se tocó el hilo; si se tocó fuera de ventana
+  // (p.ej. un viernes), le da una caducidad de casi una semana entera y
+  // sobrevive hasta la campaña siguiente, saltándose a ese alumno sin que
+  // nadie se entere (pasó de verdad: Covadonga Félix, tocado el viernes
+  // 14/08, caducaba el 20/08). En el momento en que la campaña va a
+  // arrancar, ningún hilo de reserva puede ser legítimo todavía — los
+  // crea ella misma a partir de aquí — así que se descartan todos.
+  for (const [phone, st] of Object.entries(pending)) {
+    if (st && st.type === 'suggest') {
+      delete pending[phone];
+      persistPending(phone).catch(() => {});
+    }
+  }
+
   const students = allStudents.filter(s => s.active && s.phone && s.botActive !== false);
   const slots    = await loadSlots();
   const weekDates = nextWeekDates().map(w => w.date);
