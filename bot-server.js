@@ -45,11 +45,16 @@ function cancelRedirectMsg(name) {
 
 // El plazo de reserva va de martes a jueves. A partir de las 00:01 del viernes
 // está cerrado: el bot NO abre conversación de reserva hasta el martes.
-function fueraDePlazoMsg(name) {
+// Se le enseñan SUS CLASES junto al aviso. Fuera de plazo la mayoría de los
+// mensajes no son para reservar, son para preguntar por una clase que ya
+// tienen ("¿se mantiene la del 17?"). Contestar solo "el plazo está cerrado"
+// deja la pregunta sin responder (caso real).
+function fueraDePlazoMsg(name, listaClases) {
   return (
     `Hola${name ? ' ' + name : ''} 👋 El plazo para reservar las clases de la semana que viene ya está *cerrado*.\n\n` +
-    `📅 Se abre cada *martes*: te escribo yo y las organizamos.\n\n` +
-    `Si necesitas algo antes, llama a la oficina: *${OFFICE_PHONE}*.`
+    (listaClases ? `📋 *Tus próximas clases:*\n${listaClases}\n\n` : '') +
+    `📅 El plazo se abre cada *martes*: te escribo yo y las organizamos.\n\n` +
+    `Para cambiar o anular una clase, llama a la oficina: *${OFFICE_PHONE}*.`
   );
 }
 
@@ -1677,7 +1682,7 @@ app.post('/bot', async (req, res) => {
     // Los recordatorios, las cancelaciones y "¿qué clases tengo?" se atienden
     // antes que esto, así que siguen funcionando cualquier día.
     if (!bookingWindowOpen()) {
-      await sendWA(from, fueraDePlazoMsg(st.name));
+      await sendWA(from, fueraDePlazoMsg(st.name, await listaClasesAlumno(st.id)));
       done();
       return;
     }
@@ -1736,9 +1741,12 @@ app.post('/bot', async (req, res) => {
   // El cron del jueves a las 23:59 cierra los hilos, pero si el bot estaba
   // reiniciándose en ese minuto no se ejecuta y el hilo llega al viernes. Aquí
   // se corta igualmente: fuera de plazo no se reserva.
-  if (state.type === 'suggest' && !bookingWindowOpen()) {
+  // Vale para CUALQUIER hilo abierto, no solo el de reserva: un hilo antiguo de
+  // cancelación se comía el mensaje y contestaba con el aviso de la oficina a
+  // quien solo escribía "otro día" (caso real).
+  if ((state.type === 'suggest' || state.type === 'cancel') && !bookingWindowOpen()) {
     delete pending[from];
-    await sendWA(from, fueraDePlazoMsg(state.studentName));
+    await sendWA(from, fueraDePlazoMsg(state.studentName, await listaClasesAlumno(state.studentId)));
     done();
     return;
   }
