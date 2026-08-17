@@ -3772,7 +3772,11 @@ function App(){
     // la borre, no se toca la nube: el siguiente pull la devuelve.
     const deleteIds=[...borradosExplicitos].filter(id=>!cur[id]);
     if(upserts.length||deleteIds.length){
-      const {data,error}=await sb.rpc('crm_sync_slots',{p_token:token,p_upserts:upserts,p_delete_ids:deleteIds});
+      // p_intencional: el servidor solo borra si el panel lo declara. Una
+      // pestaña con el código anterior no envía este campo, así que sus
+      // borrados se ignoran en vez de llevarse clases por delante.
+      const {data,error}=await sb.rpc('crm_sync_slots',
+        {p_token:token,p_upserts:upserts,p_delete_ids:deleteIds,p_intencional:true});
       if(error)throw new Error(error.message);
       // Verificación anti-pérdida: si la nube guardó MENOS clases de las que
       // enviamos, alguna se rechazó (alumno o profesor no válido). No la damos
