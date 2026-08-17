@@ -296,6 +296,44 @@ const F=({label,children})=>(
 );
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
+// ── Copia local de las clases ──────────────────────────────────────────────
+// El navegador guarda una copia completa del horario en localStorage. Si la
+// nube pierde clases, esta copia permite recuperarlas. Va en la pantalla de
+// login A PROPOSITO: nada mas entrar, el panel descarga de la nube y machaca
+// la copia local, asi que hay que sacarla ANTES de iniciar sesion.
+// Solo aparece abriendo la web con ?recuperar al final.
+function CopiaLocal(){
+  const [msg,setMsg]=useState('');
+  if(typeof location==='undefined'||!/[?&]recuperar/.test(location.search))return null;
+  const leer=()=>{try{return JSON.parse(localStorage.getItem('crm_slots_v4')||'{}')}catch(e){return {}}};
+  const n=Object.keys(leer()).length;
+  const descargar=()=>{
+    const datos=localStorage.getItem('crm_slots_v4')||'{}';
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([datos],{type:'application/json'}));
+    a.download=`copia-clases-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);a.click();a.remove();
+    setMsg(`Descargado: ${n} clases. Busca el archivo en tu carpeta de Descargas.`);
+  };
+  return(
+    <div onClick={e=>e.stopPropagation()}
+      style={{marginTop:18,padding:'14px 16px',borderRadius:10,background:'rgba(255,255,255,.07)',
+        border:'1px solid rgba(255,255,255,.15)'}}>
+      <div style={{fontSize:13,fontWeight:700,color:'#fff',marginBottom:4}}>Copia local del horario</div>
+      <div style={{fontSize:12,color:'rgba(255,255,255,.6)',marginBottom:10}}>
+        Este ordenador guarda <strong style={{color:'#fff'}}>{n} clases</strong>. Descárgalas sin
+        iniciar sesión: al entrar, el panel se sincroniza y esta copia se sustituye.
+      </div>
+      <button type="button" onClick={descargar} disabled={!n}
+        style={{width:'100%',padding:'10px',borderRadius:8,border:'none',cursor:n?'pointer':'not-allowed',
+          background:n?'#fd761a':'rgba(255,255,255,.15)',color:'#fff',fontSize:13,fontWeight:700}}>
+        {n?'Descargar copia':'Este ordenador no tiene copia'}
+      </button>
+      {msg&&<div style={{fontSize:12,color:'#4ade80',marginTop:8}}>{msg}</div>}
+    </div>
+  );
+}
+
 function LoginScreen({onLogin, professors}){
   const school=loadSchool();
   const [userId,setUserId]=useState('admin');
@@ -413,6 +451,7 @@ function LoginScreen({onLogin, professors}){
           <p style={{textAlign:'center',fontSize:11,color:'rgba(255,255,255,.25)',marginTop:20}}>
             ¿Olvidaste la contraseña? Contacta con el administrador.
           </p>
+          <CopiaLocal/>
         </form>
       </div>
     </div>
