@@ -7591,7 +7591,8 @@ function App() {
       } = await sb.rpc('crm_sync_slots', {
         p_token: token,
         p_upserts: upserts,
-        p_delete_ids: deleteIds
+        p_delete_ids: deleteIds,
+        p_intencional: true
       });
       if (error) throw new Error(error.message);
       if (data && typeof data.upserted === 'number' && data.upserted < upserts.length) {
