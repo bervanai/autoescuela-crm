@@ -171,6 +171,10 @@ const mkGrid = (startH, endMin, step) => {
 };
 const TIME_SLOTS = mkGrid(7, 21 * 60 + 45, 15);
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const borradosExplicitos = new Set();
+const marcarBorrada = id => {
+  if (id) borradosExplicitos.add(id);
+};
 const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const NAMES_INAKI = ['Ana García', 'Luis Martín', 'Carmen López', 'Javier Pérez', 'María Sánchez', 'Pedro Ruiz', 'Laura Torres', 'Sofía Moreno', 'Miguel Díaz', 'Elena Castro'];
 const NAMES_CARLOS = ['Roberto Jiménez', 'Natalia Romero', 'Sergio Navarro', 'Paula Ortiz', 'Diego Herrera', 'Alicia Flores', 'Raúl Gómez', 'Marta Ramos', 'Antonio Molina', 'Cristina Reyes'];
@@ -3252,6 +3256,7 @@ function Horario({
         ...ss
       };
       chain.forEach(s => {
+        marcarBorrada(s.id);
         delete n[s.id];
       });
       return n;
@@ -3307,6 +3312,7 @@ function Horario({
         if (orig.fromBot) {
           n[m.id] = nuevo;
         } else {
+          marcarBorrada(m.id);
           delete n[m.id];
           const nid = `slot_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`;
           n[nid] = {
@@ -3351,7 +3357,10 @@ function Horario({
       const n = {
         ...ss
       };
-      sel.forEach(id => delete n[id]);
+      sel.forEach(id => {
+        marcarBorrada(id);
+        delete n[id];
+      });
       return n;
     });
     exitSel();
@@ -5527,6 +5536,7 @@ function Disponibilidad({
         ...ss
       };
       ids.forEach(id => {
+        marcarBorrada(id);
         delete n[id];
       });
       return n;
@@ -7573,7 +7583,7 @@ function App() {
       const j = JSON.stringify(row);
       if (syncedSlots.current[id] !== j) upserts.push(row);
     });
-    const deleteIds = Object.keys(syncedSlots.current).filter(id => !cur[id]);
+    const deleteIds = [...borradosExplicitos].filter(id => !cur[id]);
     if (upserts.length || deleteIds.length) {
       const {
         data,
@@ -7587,6 +7597,7 @@ function App() {
       if (data && typeof data.upserted === 'number' && data.upserted < upserts.length) {
         throw new Error('Alguna clase no se pudo guardar. Revisa que tenga alumno y profesor asignados.');
       }
+      deleteIds.forEach(id => borradosExplicitos.delete(id));
       const snap = {};
       Object.entries(cur).forEach(([id, row]) => {
         snap[id] = JSON.stringify(row);

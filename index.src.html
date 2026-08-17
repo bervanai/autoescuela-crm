@@ -130,6 +130,16 @@ const TIME_SLOTS=mkGrid(7,21*60+45,15);
 // y en zonas horarias al este (+UTC) devuelve el DÍA ANTERIOR, lo que hacía que
 // las clases se pintaran/guardaran corridas un día en el panel.
 const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+// ── Borrados EXPLÍCITOS del administrador ──────────────────────────────────
+// El sync SOLO borra en la nube lo que esté aquí. Antes se deducía: "estaba en
+// el último snapshot y ya no está en el estado local ⇒ bórralo". Eso hacía
+// desaparecer clases que el bot acababa de reservar y que el panel aún no
+// tenía — por deshacer un cambio, o porque el pull actualiza la referencia al
+// instante y el estado de React un momento después. Se perdieron 55 clases
+// reales así. Una clase solo se borra si alguien pulsa borrar.
+const borradosExplicitos = new Set();
+const marcarBorrada = id => { if (id) borradosExplicitos.add(id); };
 const DAY_NAMES=['Lun','Mar','Mié','Jue','Vie','Sáb'];
 
 const NAMES_INAKI =['Ana García','Luis Martín','Carmen López','Javier Pérez','María Sánchez',
@@ -1514,7 +1524,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
       if(window.confirm(`¿Avisar a ${stu?.name||'el alumno'} por WhatsApp de que esta clase se cancela?`)) notifyCancel(chain);
     }
     pushUndo();
-    setSlots(ss=>{const n={...ss};chain.forEach(s=>{delete n[s.id];});return n;});setEditing(null);
+    setSlots(ss=>{const n={...ss};chain.forEach(s=>{marcarBorrada(s.id);delete n[s.id];});return n;});setEditing(null);
   };
   // Mover una clase (arrastrar) a otra hora/día/profesor, estilo Google Calendar.
   // Comprueba el solape antes de mover. Las clases del bot conservan su id.
@@ -1555,7 +1565,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
         const orig=n[m.id]; if(!orig)return;
         const nuevo={...orig,date,time:m._newTime,profId};
         if(orig.fromBot){ n[m.id]=nuevo; }
-        else { delete n[m.id]; const nid=`slot_${Date.now()}_${i}_${Math.random().toString(36).slice(2,6)}`; n[nid]={...nuevo,id:nid}; }
+        else { marcarBorrada(m.id); delete n[m.id]; const nid=`slot_${Date.now()}_${i}_${Math.random().toString(36).slice(2,6)}`; n[nid]={...nuevo,id:nid}; }
       });
       return n;
     });
@@ -1584,7 +1594,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
       bloques.forEach(b=>notifyCancel(b));
     }
     pushUndo();
-    setSlots(ss=>{const n={...ss};sel.forEach(id=>delete n[id]);return n;});
+    setSlots(ss=>{const n={...ss};sel.forEach(id=>{marcarBorrada(id);delete n[id];});return n;});
     exitSel();
   };
   const bulkConfirm=val=>{
@@ -2608,7 +2618,7 @@ function Disponibilidad({user,professors,students,slots,setSlots,abrirMasivas}){
   const cancelaBloques=bloques=>{
     bloques.forEach(b=>avisaCancelada(b));
     const ids=new Set(bloques.flat().map(s=>s.id));
-    setSlots(ss=>{const n={...ss};ids.forEach(id=>{delete n[id];});return n;});
+    setSlots(ss=>{const n={...ss};ids.forEach(id=>{marcarBorrada(id);delete n[id];});return n;});
   };
   // Una clase doble son DOS clases de 45 min seguidas del mismo alumno. Esto
   // las junta para tratarlas como una sola: se cancela entera y se avisa una
@@ -3747,7 +3757,7 @@ function App(){
         throw new Error('Sesión caducada — cierra sesión y vuelve a entrar');
       throw new Error(eData.message);
     }
-    // ── 2º CLASES (diff granular; nunca borra las del bot) ────────────
+    // ── 2º CLASES ─────────────────────────────────────────────────────
     const cur={};
     Object.values(slots).filter(s=>s.id&&s.date&&s.time).forEach(s=>{cur[s.id]=normSlotDB(s);});
     const upserts=[];
@@ -3755,7 +3765,12 @@ function App(){
       const j=JSON.stringify(row);
       if(syncedSlots.current[id]!==j)upserts.push(row);
     });
-    const deleteIds=Object.keys(syncedSlots.current).filter(id=>!cur[id]);
+    // Solo se borra lo que el admin ha borrado A PROPÓSITO. Antes se deducía
+    // ("estaba en el snapshot y ya no está ⇒ bórralo") y eso se llevaba por
+    // delante las reservas que el bot acababa de hacer y que este panel aún no
+    // había recibido. Si una clase desaparece del estado local sin que nadie
+    // la borre, no se toca la nube: el siguiente pull la devuelve.
+    const deleteIds=[...borradosExplicitos].filter(id=>!cur[id]);
     if(upserts.length||deleteIds.length){
       const {data,error}=await sb.rpc('crm_sync_slots',{p_token:token,p_upserts:upserts,p_delete_ids:deleteIds});
       if(error)throw new Error(error.message);
@@ -3765,6 +3780,7 @@ function App(){
       if(data&&typeof data.upserted==='number'&&data.upserted<upserts.length){
         throw new Error('Alguna clase no se pudo guardar. Revisa que tenga alumno y profesor asignados.');
       }
+      deleteIds.forEach(id=>borradosExplicitos.delete(id));
       const snap={};Object.entries(cur).forEach(([id,row])=>{snap[id]=JSON.stringify(row);});
       syncedSlots.current=snap;
     }
