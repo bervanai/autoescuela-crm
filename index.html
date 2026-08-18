@@ -2996,6 +2996,7 @@ function SlotForm({
     vehicleId: slot?.vehicleId || '',
     slotType: slot?.slotType || 'practica',
     confirmed: slot?.confirmed || false,
+    blocked: slot?.blocked || false,
     profId: slot?.profId || professors[0]?.id || '',
     date: slot?.date || '',
     time: slot?.time || TIME_SLOTS[0]
@@ -3039,7 +3040,45 @@ function SlotForm({
   }, professors.map(p => React.createElement("option", {
     key: p.id,
     value: p.id
-  }, p.name)))), React.createElement(F, {
+  }, p.name)))), isAdmin && React.createElement("label", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      cursor: 'pointer',
+      fontSize: 13,
+      background: f.blocked ? '#fef2f2' : '#f8fafc',
+      border: '1px solid ' + (f.blocked ? '#fecaca' : '#e2e8f0'),
+      borderRadius: 8,
+      padding: '8px 10px',
+      margin: '4px 0 12px'
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: f.blocked,
+    onChange: e => {
+      const v = e.target.checked;
+      setF(x => ({
+        ...x,
+        blocked: v,
+        studentId: v ? '' : x.studentId
+      }));
+    },
+    style: {
+      accentColor: '#dc2626'
+    }
+  }), React.createElement("span", null, React.createElement(Icon, {
+    name: "lock",
+    size: 13,
+    style: {
+      verticalAlign: -2,
+      color: '#dc2626'
+    }
+  }), " ", React.createElement("strong", null, "Clase bloqueadora"), React.createElement("span", {
+    style: {
+      color: '#94a3b8'
+    }
+  }, " — ocupa el hueco sin ningún alumno (no genera avisos por WhatsApp)"))), !f.blocked && React.createElement(F, {
     label: "Alumno"
   }, React.createElement("select", {
     className: inp,
@@ -3064,7 +3103,7 @@ function SlotForm({
     className: inp,
     value: f.vehicleId,
     onChange: e => s('vehicleId', e.target.value),
-    disabled: !isAdmin
+    disabled: !isAdmin || f.blocked
   }, React.createElement("option", {
     value: ""
   }, "— —"), vehicles.map(v => React.createElement("option", {
@@ -3081,7 +3120,7 @@ function SlotForm({
     value: "practica"
   }, "Práctica"), React.createElement("option", {
     value: "examen"
-  }, "Examen")))), React.createElement(F, {
+  }, "Examen")))), !f.blocked && React.createElement(F, {
     label: "Estado de confirmación"
   }, React.createElement("div", {
     style: {
@@ -3131,11 +3170,16 @@ function SlotForm({
         alert('⚠️ Selecciona el profesor.');
         return;
       }
-      if (!f.studentId) {
-        alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.');
+      if (!f.blocked && !f.studentId) {
+        alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.\n\nSi quieres ocupar el hueco sin alumno, marca "Clase bloqueadora".');
         return;
       }
-      onSave(f);
+      onSave(f.blocked ? {
+        ...f,
+        studentId: '',
+        vehicleId: '',
+        confirmed: true
+      } : f);
     },
     className: btnO
   }, React.createElement(Icon, {
@@ -4028,8 +4072,8 @@ function Horario({
           },
           onClick: () => selMode ? toggleSel(slot.id) : setEditing(slot),
           style: {
-            background: isPrac ? '#1e3a8a' : '#581c87',
-            borderLeft: `3px solid ${isPrac ? '#93c5fd' : '#c084fc'}`,
+            background: slot.blocked ? '#475569' : isPrac ? '#1e3a8a' : '#581c87',
+            borderLeft: `3px solid ${slot.blocked ? '#94a3b8' : isPrac ? '#93c5fd' : '#c084fc'}`,
             position: 'relative',
             outline: selMode && sel.has(slot.id) ? '2px solid #38bdf8' : 'none',
             outlineOffset: 1,
@@ -4058,7 +4102,13 @@ function Horario({
             whiteSpace: 'nowrap',
             flex: 1
           }
-        }, stu?.name || '?'), isAuto && React.createElement("span", {
+        }, slot.blocked ? React.createElement(React.Fragment, null, React.createElement(Icon, {
+          name: "lock",
+          size: 9,
+          style: {
+            verticalAlign: -1
+          }
+        }), " Bloqueado") : stu?.name || '?'), isAuto && React.createElement("span", {
           style: {
             fontSize: 8,
             fontWeight: 800,
@@ -4082,7 +4132,7 @@ function Horario({
             display: 'flex',
             justifyContent: 'space-between'
           }
-        }, React.createElement("span", null, slot.confirmed ? '✓' : '…', " ", isPrac ? 'Práct.' : 'Exam.'), React.createElement("span", {
+        }, React.createElement("span", null, slot.blocked ? '—' : slot.confirmed ? '✓' : '…', " ", isPrac ? 'Práct.' : 'Exam.'), React.createElement("span", {
           style: {
             color: dur === 60 ? '#fcd34d' : 'rgba(255,255,255,.5)'
           }
@@ -7493,7 +7543,8 @@ function App() {
     slot_type: s.slotType || s.slot_type || s.type || 'practica',
     status: s.cancelled ? 'cancelled' : s.confirmed ? 'confirmed' : 'pending',
     reminder_sent: !!(s.reminderSent || s.reminder_sent),
-    created_by: s.fromBot ? 'bot' : 'crm'
+    created_by: s.fromBot ? 'bot' : 'crm',
+    blocked: !!s.blocked
   });
   const collectAvailRows = () => {
     const availObj = load('crm_avail_v1', {}) || {};
