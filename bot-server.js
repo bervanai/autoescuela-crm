@@ -498,6 +498,7 @@ function normalizeSlot(row) {
     type:         row.slot_type   ?? row.slotType   ?? row.type,
     status:       row.status,
     reminderSent: row.reminder_sent ?? row.reminderSent,
+    blocked:      row.blocked,
     createdBy:    row.created_by  ?? row.createdBy,
     dayName:      row.dayName     ?? row.day_name,
   };
@@ -518,6 +519,7 @@ function denormalizeSlot(obj) {
   if (obj.status      !== undefined) out.status       = obj.status;
   const reminderSent = obj.reminderSent ?? obj.reminder_sent;
   if (reminderSent    !== undefined) out.reminder_sent = reminderSent;
+  if (obj.blocked     !== undefined) out.blocked      = obj.blocked;
   const createdBy = obj.createdBy ?? obj.created_by;
   if (createdBy       !== undefined) out.created_by   = createdBy;
   return out;
@@ -657,8 +659,8 @@ function overlapsExisting(slots, profId, date, time, dur = SLOT_MIN){
   return slots.some(s => {
     if (!(s.profId === profId || s.prof_id === profId)) return false;
     if (String(s.date).substring(0,10) !== d10) return false;
-    if (!(s.studentId || s.student_id)) return false;
     if (s.status === 'cancelled') return false;
+    if (!(s.studentId || s.student_id || s.blocked)) return false;
     return rangesOverlap(aStart, dur, toMin(String(s.time).substring(0,5)), s.duration || SLOT_MIN);
   });
 }
@@ -1290,7 +1292,7 @@ async function sendReminders() {
   const toRemind = slots.filter(s => {
     const studentId = s.studentId ?? s.student_id;
     const reminderSent = s.reminderSent ?? s.reminder_sent;
-    if (!studentId || s.status === 'cancelled' || reminderSent) return false;
+    if (!studentId || s.status === 'cancelled' || reminderSent || s.blocked) return false;
     const h = hoursUntil(s.date, s.time);
     return h > 0 && h <= 48;
   });
@@ -2181,7 +2183,7 @@ app.get('/status', async (req, res) => {
     proximas_48h:    slots.filter(s => {
       const studentId = s.studentId ?? s.student_id;
       const reminderSent = s.reminderSent ?? s.reminder_sent;
-      return studentId && s.status !== 'cancelled' && !reminderSent
+      return studentId && s.status !== 'cancelled' && !reminderSent && !s.blocked
         && hoursUntil(s.date, s.time) > 0 && hoursUntil(s.date, s.time) <= 48;
     }).length,
     ventana_reserva: bookingWindowOpen() ? 'ABIERTA (Mar-Jue)' : 'CERRADA',

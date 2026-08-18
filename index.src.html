@@ -1378,7 +1378,7 @@ function getWeek(offset=0){
 }
 function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
   const [f,setF]=useState({studentId:slot?.studentId||'',vehicleId:slot?.vehicleId||'',
-    slotType:slot?.slotType||'practica',confirmed:slot?.confirmed||false,
+    slotType:slot?.slotType||'practica',confirmed:slot?.confirmed||false,blocked:slot?.blocked||false,
     profId:slot?.profId||professors[0]?.id||'',date:slot?.date||'',time:slot?.time||TIME_SLOTS[0]});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
   const ps=students.filter(st=>st.profId===f.profId&&st.active);
@@ -1397,15 +1397,30 @@ function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
           {professors.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </F>
-      <F label="Alumno">
-        <select className={inp} value={f.studentId} onChange={e=>s('studentId',e.target.value)} disabled={!isAdmin}>
-          <option value="">— seleccionar —</option>
-          {ps.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
-        </select>
-      </F>
+      {isAdmin&&(
+        <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13,
+          background:f.blocked?'#fef2f2':'#f8fafc',border:'1px solid '+(f.blocked?'#fecaca':'#e2e8f0'),
+          borderRadius:8,padding:'8px 10px',margin:'4px 0 12px'}}>
+          <input type="checkbox" checked={f.blocked}
+            onChange={e=>{const v=e.target.checked;setF(x=>({...x,blocked:v,studentId:v?'':x.studentId}));}}
+            style={{accentColor:'#dc2626'}}/>
+          <span>
+            <Icon name="lock" size={13} style={{verticalAlign:-2,color:'#dc2626'}}/> <strong>Clase bloqueadora</strong>
+            <span style={{color:'#94a3b8'}}> — ocupa el hueco sin ningún alumno (no genera avisos por WhatsApp)</span>
+          </span>
+        </label>
+      )}
+      {!f.blocked&&(
+        <F label="Alumno">
+          <select className={inp} value={f.studentId} onChange={e=>s('studentId',e.target.value)} disabled={!isAdmin}>
+            <option value="">— seleccionar —</option>
+            {ps.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
+          </select>
+        </F>
+      )}
       <div className="form-2col" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <F label="Vehículo">
-          <select className={inp} value={f.vehicleId} onChange={e=>s('vehicleId',e.target.value)} disabled={!isAdmin}>
+          <select className={inp} value={f.vehicleId} onChange={e=>s('vehicleId',e.target.value)} disabled={!isAdmin||f.blocked}>
             <option value="">— —</option>
             {vehicles.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
@@ -1417,25 +1432,27 @@ function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
           </select>
         </F>
       </div>
-      <F label="Estado de confirmación">
-        <div style={{display:'flex',gap:20,marginTop:4}}>
-          {[{v:true,l:'✅ Confirmada'},{v:false,l:'⏳ Pendiente'}].map(opt=>(
-            <label key={opt.l} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:13}}>
-              <input type="radio" checked={f.confirmed===opt.v}
-                onChange={()=>isAdmin&&s('confirmed',opt.v)} style={{accentColor:'#fd761a'}}/>
-              {opt.l}
-            </label>
-          ))}
-        </div>
-      </F>
+      {!f.blocked&&(
+        <F label="Estado de confirmación">
+          <div style={{display:'flex',gap:20,marginTop:4}}>
+            {[{v:true,l:'✅ Confirmada'},{v:false,l:'⏳ Pendiente'}].map(opt=>(
+              <label key={opt.l} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:13}}>
+                <input type="radio" checked={f.confirmed===opt.v}
+                  onChange={()=>isAdmin&&s('confirmed',opt.v)} style={{accentColor:'#fd761a'}}/>
+                {opt.l}
+              </label>
+            ))}
+          </div>
+        </F>
+      )}
       {isAdmin?(
         <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
           <button onClick={onClose} className={btnG}>Cancelar</button>
           <button onClick={()=>{
             if(!f.date){alert('⚠️ Pon la fecha de la clase.');return;}
             if(!f.profId){alert('⚠️ Selecciona el profesor.');return;}
-            if(!f.studentId){alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.');return;}
-            onSave(f);
+            if(!f.blocked&&!f.studentId){alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.\n\nSi quieres ocupar el hueco sin alumno, marca "Clase bloqueadora".');return;}
+            onSave(f.blocked?{...f,studentId:'',vehicleId:'',confirmed:true}:f);
           }} className={btnO}><Icon name="save" size={17}/>Guardar</button>
         </div>
       ):(
@@ -1909,19 +1926,21 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
                                   draggable={isAdmin&&!selMode}
                                   onDragStart={e=>{e.dataTransfer.setData('text/plain',slot.id);e.dataTransfer.effectAllowed='move';}}
                                   onClick={()=>selMode?toggleSel(slot.id):setEditing(slot)}
-                                  style={{background:isPrac?'#1e3a8a':'#581c87',
-                                    borderLeft:`3px solid ${isPrac?'#93c5fd':'#c084fc'}`,position:'relative',
+                                  style={{background:slot.blocked?'#475569':isPrac?'#1e3a8a':'#581c87',
+                                    borderLeft:`3px solid ${slot.blocked?'#94a3b8':isPrac?'#93c5fd':'#c084fc'}`,position:'relative',
                                     outline:selMode&&sel.has(slot.id)?'2px solid #38bdf8':'none',
                                     outlineOffset:1,opacity:selMode&&!sel.has(slot.id)?.55:1}}>
                                   {selMode&&sel.has(slot.id)&&<div style={{position:'absolute',top:1,right:2,fontSize:10}}>✓</div>}
                                   <div style={{display:'flex',alignItems:'center',gap:3}}>
                                     <div style={{fontSize:10,fontWeight:600,color:'#f1f5f9',
-                                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{stu?.name||'?'}</div>
+                                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>
+                                      {slot.blocked?<><Icon name="lock" size={9} style={{verticalAlign:-1}}/> Bloqueado</>:(stu?.name||'?')}
+                                    </div>
                                     {isAuto&&<span style={{fontSize:8,fontWeight:800,background:'#a855f7',color:'#fff',padding:'0 3px',borderRadius:2,flexShrink:0}}>A</span>}
                                     {isMoto&&<Icon name="two_wheeler" size={9} style={{color:'#6ee7b7',flexShrink:0}}/>}
                                   </div>
                                   <div style={{fontSize:9,color:'rgba(255,255,255,.6)',display:'flex',justifyContent:'space-between'}}>
-                                    <span>{slot.confirmed?'✓':'…'} {isPrac?'Práct.':'Exam.'}</span>
+                                    <span>{slot.blocked?'—':(slot.confirmed?'✓':'…')} {isPrac?'Práct.':'Exam.'}</span>
                                     <span style={{color:dur===60?'#fcd34d':'rgba(255,255,255,.5)'}}>{dur}′</span>
                                   </div>
                                 </div>
@@ -3686,6 +3705,7 @@ function App(){
     status:s.cancelled?'cancelled':s.confirmed?'confirmed':'pending',
     reminder_sent:!!(s.reminderSent||s.reminder_sent),
     created_by:s.fromBot?'bot':'crm',
+    blocked:!!(s.blocked),
   });
   // Recoge disponibilidad, bloqueos y exam desde localStorage
   const collectAvailRows=()=>{
