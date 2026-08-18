@@ -1292,7 +1292,9 @@ async function sendReminders() {
   const toRemind = slots.filter(s => {
     const studentId = s.studentId ?? s.student_id;
     const reminderSent = s.reminderSent ?? s.reminder_sent;
-    if (!studentId || s.status === 'cancelled' || reminderSent || s.blocked) return false;
+    const slotType = s.slotType ?? s.slot_type;
+    // Los exámenes NO llevan recordatorio del bot: los avisa la oficina aparte.
+    if (!studentId || s.status === 'cancelled' || reminderSent || s.blocked || slotType === 'examen') return false;
     const h = hoursUntil(s.date, s.time);
     return h > 0 && h <= 48;
   });
@@ -2183,7 +2185,8 @@ app.get('/status', async (req, res) => {
     proximas_48h:    slots.filter(s => {
       const studentId = s.studentId ?? s.student_id;
       const reminderSent = s.reminderSent ?? s.reminder_sent;
-      return studentId && s.status !== 'cancelled' && !reminderSent && !s.blocked
+      const slotType = s.slotType ?? s.slot_type;
+      return studentId && s.status !== 'cancelled' && !reminderSent && !s.blocked && slotType !== 'examen'
         && hoursUntil(s.date, s.time) > 0 && hoursUntil(s.date, s.time) <= 48;
     }).length,
     ventana_reserva: bookingWindowOpen() ? 'ABIERTA (Mar-Jue)' : 'CERRADA',
