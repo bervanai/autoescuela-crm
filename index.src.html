@@ -4047,7 +4047,22 @@ function App(){
   const [lastCloudSync,setLastCloudSync]=useState(null);
   const suppressPush=useRef(false);   // el cambio viene de la nube: no re-subirlo
   const lastLocalChange=useRef(0);    // timestamp de la última edición local
-  const pushPending=useRef(false);    // hay un cambio local que aún no confirmó la nube
+  // hay un cambio local que aún no confirmó la nube. Arranca en true si al
+  // abrir se detecta que lo que hay en el navegador NO coincide con lo último
+  // que se confirmó subido (p.ej. el navegador se cerró/se coló antes de que
+  // el push de la última edición llegara a salir): así el primer pull espera
+  // a que ese cambio se intente subir en vez de borrarlo con la versión vieja
+  // de la nube.
+  // Solo aplica a admin: es el único rol que sube cambios, así que es el
+  // único que puede tener algo pendiente de confirmar al abrir.
+  const pushPending=useRef((()=>{
+    try{
+      if(!user||user.role!=='admin')return false;
+      const lastSynced=localStorage.getItem('crm_last_synced_snapshot')||'';
+      const current=JSON.stringify([students,slots,professors,vehicles,examDays]);
+      return !!lastSynced&&lastSynced!==current;
+    }catch{return false;}
+  })());
   useEffect(()=>{
     if(!user)return;
     if(!getSupabase()||!sessionStorage.getItem('crm_token')){setCloudStatus('off');return;}
@@ -4091,7 +4106,15 @@ function App(){
   // al momento (sin esperar el debounce) y se avisa antes de salir: evita que
   // un cambio hecho justo antes de recargar/cerrar se pierda en silencio.
   const instantTimer=useRef(null);
-  const lastPushed=useRef('');
+  // Arranca con la última confirmación real (persistida), no vacío: así, si
+  // el navegador se cerró antes de terminar de subir, el próximo arranque
+  // sabe que sigue habiendo un cambio pendiente (ver pushPending arriba).
+  const lastPushed=useRef((()=>{try{return localStorage.getItem('crm_last_synced_snapshot')||''}catch{return ''}})());
+  const markSynced=snapshot=>{
+    lastPushed.current=snapshot;
+    pushPending.current=false;
+    try{localStorage.setItem('crm_last_synced_snapshot',snapshot);}catch{}
+  };
   useEffect(()=>{
     if(!user||user.role!=='admin')return;
     if(!getSupabase()||!sessionStorage.getItem('crm_token'))return;
@@ -4099,19 +4122,17 @@ function App(){
     if(suppressPush.current){
       // Este cambio vino del pull de la nube: registrar como base, no re-subir
       suppressPush.current=false;
-      lastPushed.current=snapshot;
-      pushPending.current=false;
+      markSynced(snapshot);
       return;
     }
-    if(snapshot===lastPushed.current)return; // nada cambió de verdad (p.ej. sync del bot)
+    if(snapshot===lastPushed.current){pushPending.current=false;return;} // nada cambió de verdad (p.ej. sync del bot)
     lastLocalChange.current=Date.now();
     pushPending.current=true;
     clearTimeout(instantTimer.current);
     const doPush=async(retry)=>{
       try{
         await pushIncremental();
-        lastPushed.current=snapshot;
-        pushPending.current=false;
+        markSynced(snapshot);
         setCloudStatus('ok');setLastCloudSync(new Date());
       }catch(e){
         // Sesión caducada: no reintentar ni machacar nada, al login
