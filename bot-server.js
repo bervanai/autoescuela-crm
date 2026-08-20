@@ -2077,8 +2077,43 @@ app.post('/bot', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════
+// COPIA DE SEGURIDAD DIARIA DEL HORARIO DE LA SEMANA QUE VIENE
+// ════════════════════════════════════════════════════════════
+// Cada día a las 23:59 se guarda una foto del horario de "la semana que
+// viene" (lunes a sábado). Una sola fila por autoescuela en Supabase: cada
+// día SOBREESCRIBE la copia del día anterior (no se acumula historial).
+// El CRM la descarga desde el Dashboard vía la RPC crm_get_schedule_backup.
+async function backupNextWeekSchedule() {
+  if (!USE_SUPABASE) { console.log('⚠️  Backup horario: requiere modo Supabase'); return; }
+  try {
+    const weekStart = ymdLocal(nextWeekMonday());
+    const weekEnd   = nextWeekLastDate();
+    const slots     = await loadSlots();
+    const weekSlots = slots.filter(s => {
+      const d = String(s.date).substring(0, 10);
+      return d >= weekStart && d <= weekEnd;
+    });
+    const { error } = await supabase.from('schedule_backups').upsert({
+      school_id:   SCHOOL_ID || '',
+      backup_date: ymdLocal(new Date()),
+      week_start:  weekStart,
+      week_end:    weekEnd,
+      slots:       weekSlots,
+      updated_at:  new Date().toISOString(),
+    }, { onConflict: 'school_id' });
+    if (error) { console.error('backupNextWeekSchedule:', error.message); return; }
+    console.log(`💾 Backup horario semana que viene (${weekStart} → ${weekEnd}): ${weekSlots.length} clases guardadas`);
+  } catch (e) {
+    console.error('backupNextWeekSchedule (excepción):', e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 // CRONS
 // ════════════════════════════════════════════════════════════
+
+// Cada día a las 23:59 → copia de seguridad del horario de la semana que viene
+cron.schedule('59 23 * * *', backupNextWeekSchedule, { timezone: 'Europe/Madrid' });
 
 // Martes a las 9:00 → solicitar reservas
 // El bot SOLO inicia conversación los MARTES a las 9:00. La ventana de reserva
@@ -2170,6 +2205,12 @@ app.get('/test/reservas', async (req, res) => {
 app.get('/test/recordatorios', async (req, res) => {
   if (!requireKey(req, res)) return;
   await sendReminders();
+  res.json({ ok: true });
+});
+
+app.get('/test/backup-horario', async (req, res) => {
+  if (!requireKey(req, res)) return;
+  await backupNextWeekSchedule();
   res.json({ ok: true });
 });
 

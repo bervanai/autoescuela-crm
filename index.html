@@ -1038,6 +1038,86 @@ function Dashboard({
     color: '#b91c1c',
     bg: '#fee2e2'
   }];
+  const [backupMeta, setBackupMeta] = useState(null);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupMsg, setBackupMsg] = useState('');
+  useEffect(() => {
+    if (!isAdmin) return;
+    const sb = getSupabase();
+    const token = sessionStorage.getItem('crm_token');
+    if (!sb || !token) return;
+    sb.rpc('crm_get_schedule_backup', {
+      p_token: token
+    }).then(({
+      data,
+      error
+    }) => {
+      if (!error && data) setBackupMeta({
+        backup_date: data.backup_date,
+        week_start: data.week_start,
+        week_end: data.week_end,
+        count: (data.slots || []).length
+      });
+    }).catch(() => {});
+  }, [isAdmin]);
+  const handleDownloadBackup = async () => {
+    const sb = getSupabase();
+    const token = sessionStorage.getItem('crm_token');
+    if (!sb || !token) {
+      setBackupMsg('❌ Conéctate a Supabase para descargar la copia.');
+      return;
+    }
+    setBackupLoading(true);
+    setBackupMsg('');
+    try {
+      const {
+        data,
+        error
+      } = await sb.rpc('crm_get_schedule_backup', {
+        p_token: token
+      });
+      if (error) throw error;
+      if (!data) {
+        setBackupMsg('Aún no hay ninguna copia de seguridad guardada (se genera cada día a las 23:59).');
+        return;
+      }
+      const rows = (data.slots || []).slice().sort((a, b) => String(a.date) + String(a.time) > String(b.date) + String(b.time) ? 1 : -1);
+      const header = 'Fecha;Hora;Profesor;Alumno;Tipo;Estado;Duración(min)';
+      const lines = rows.map(s => {
+        const prof = professors.find(p => p.id === (s.prof_id || s.profId));
+        const stu = students.find(st => st.id === (s.student_id || s.studentId));
+        const fecha = String(s.date).substring(0, 10);
+        const hora = String(s.time).substring(0, 5);
+        const tipo = (s.slot_type || s.slotType) === 'examen' ? 'Examen' : 'Práctica';
+        const estado = s.status === 'cancelled' ? 'Cancelada' : s.status === 'confirmed' ? 'Confirmada' : 'Pendiente';
+        const alumno = stu?.name || (s.blocked ? '🔒 BLOQUEADO' : '—');
+        return [fecha, hora, prof?.name || '—', alumno, tipo, estado, s.duration || 45].join(';');
+      });
+      const csv = '﻿' + [header, ...lines].join('\n');
+      const blob = new Blob([csv], {
+        type: 'text/csv;charset=utf-8;'
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `horario_semana_${data.week_start}_a_${data.week_end}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBackupMeta({
+        backup_date: data.backup_date,
+        week_start: data.week_start,
+        week_end: data.week_end,
+        count: rows.length
+      });
+      setBackupMsg('✅ Descargado');
+    } catch (e) {
+      setBackupMsg('❌ Error: ' + (e.message || 'desconocido'));
+    } finally {
+      setBackupLoading(false);
+    }
+  };
   return React.createElement("div", {
     style: {
       padding: 24,
@@ -1078,7 +1158,62 @@ function Dashboard({
       color: '#64748b',
       marginTop: 5
     }
-  }, s.label)))), React.createElement(Card, null, React.createElement("div", {
+  }, s.label)))), isAdmin && React.createElement(Card, {
+    style: {
+      marginBottom: 18
+    }
+  }, React.createElement("div", {
+    style: {
+      padding: '14px 18px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("div", {
+    style: {
+      background: '#f1f5f9',
+      borderRadius: 9,
+      padding: 9,
+      display: 'inline-flex'
+    }
+  }, React.createElement(Icon, {
+    name: "cloud_download",
+    size: 20,
+    style: {
+      color: '#1e3a5f'
+    }
+  })), React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 180
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      color: '#091426',
+      fontSize: 14
+    }
+  }, "Copia de seguridad del horario"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#64748b',
+      marginTop: 2
+    }
+  }, backupMeta ? `Última copia: ${backupMeta.backup_date} · semana ${backupMeta.week_start} a ${backupMeta.week_end} · ${backupMeta.count} clases` : 'Se genera automáticamente cada día a las 23:59 (horario de la semana que viene)'), backupMsg && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      marginTop: 3,
+      color: backupMsg.startsWith('❌') ? '#b91c1c' : '#0e6856'
+    }
+  }, backupMsg)), React.createElement("button", {
+    onClick: handleDownloadBackup,
+    disabled: backupLoading,
+    className: btnO
+  }, React.createElement(Icon, {
+    name: "download",
+    size: 16
+  }), backupLoading ? 'Descargando…' : 'Descargar'))), React.createElement(Card, null, React.createElement("div", {
     style: {
       padding: '14px 18px',
       borderBottom: '1px solid #f1f5f9',
@@ -7862,6 +7997,7 @@ function App() {
   const [lastCloudSync, setLastCloudSync] = useState(null);
   const suppressPush = useRef(false);
   const lastLocalChange = useRef(0);
+  const pushPending = useRef(false);
   useEffect(() => {
     if (!user) return;
     if (!getSupabase() || !sessionStorage.getItem('crm_token')) {
@@ -7870,7 +8006,7 @@ function App() {
     }
     let cancelled = false;
     const pull = async () => {
-      if (Date.now() - lastLocalChange.current < 8000) return;
+      if (pushPending.current || Date.now() - lastLocalChange.current < 8000) return;
       try {
         suppressPush.current = true;
         await loadFromSupabase();
@@ -7914,31 +8050,60 @@ function App() {
     if (suppressPush.current) {
       suppressPush.current = false;
       lastPushed.current = snapshot;
+      pushPending.current = false;
       return;
     }
     if (snapshot === lastPushed.current) return;
     lastLocalChange.current = Date.now();
+    pushPending.current = true;
     clearTimeout(instantTimer.current);
     const doPush = async retry => {
       try {
         await pushIncremental();
         lastPushed.current = snapshot;
+        pushPending.current = false;
         setCloudStatus('ok');
         setLastCloudSync(new Date());
       } catch (e) {
         if ((e.message || '').includes('SESION_INVALIDA') || (e.message || '').includes('caducada')) {
           sessionStorage.removeItem('crm_token');
           setCloudStatus('off');
+          pushPending.current = false;
           return;
         }
         setCloudStatus('error');
         if (retry > 0) {
           instantTimer.current = setTimeout(() => doPush(retry - 1), 4000);
+        } else {
+          pushPending.current = false;
         }
       }
     };
     instantTimer.current = setTimeout(() => doPush(2), 1500);
-    return () => clearTimeout(instantTimer.current);
+    const flushNow = () => {
+      if (!pushPending.current) return;
+      clearTimeout(instantTimer.current);
+      doPush(2);
+    };
+    const onVisibility = () => {
+      if (document.hidden) flushNow();
+    };
+    const onBeforeUnload = e => {
+      if (!pushPending.current) return;
+      flushNow();
+      e.preventDefault();
+      e.returnValue = 'Hay cambios sin guardar en la nube. Espera un segundo antes de salir.';
+      return e.returnValue;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flushNow);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      clearTimeout(instantTimer.current);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flushNow);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
   }, [students, slots, professors, vehicles, examDays, user]);
   const login = u => {
     setUser(u);
