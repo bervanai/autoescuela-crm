@@ -7997,7 +7997,16 @@ function App() {
   const [lastCloudSync, setLastCloudSync] = useState(null);
   const suppressPush = useRef(false);
   const lastLocalChange = useRef(0);
-  const pushPending = useRef(false);
+  const pushPending = useRef((() => {
+    try {
+      if (!user || user.role !== 'admin') return false;
+      const lastSynced = localStorage.getItem('crm_last_synced_snapshot') || '';
+      const current = JSON.stringify([students, slots, professors, vehicles, examDays]);
+      return !!lastSynced && lastSynced !== current;
+    } catch {
+      return false;
+    }
+  })());
   useEffect(() => {
     if (!user) return;
     if (!getSupabase() || !sessionStorage.getItem('crm_token')) {
@@ -8042,26 +8051,40 @@ function App() {
     };
   }, [user, schoolConfig]);
   const instantTimer = useRef(null);
-  const lastPushed = useRef('');
+  const lastPushed = useRef((() => {
+    try {
+      return localStorage.getItem('crm_last_synced_snapshot') || '';
+    } catch {
+      return '';
+    }
+  })());
+  const markSynced = snapshot => {
+    lastPushed.current = snapshot;
+    pushPending.current = false;
+    try {
+      localStorage.setItem('crm_last_synced_snapshot', snapshot);
+    } catch {}
+  };
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
     if (!getSupabase() || !sessionStorage.getItem('crm_token')) return;
     const snapshot = JSON.stringify([students, slots, professors, vehicles, examDays]);
     if (suppressPush.current) {
       suppressPush.current = false;
-      lastPushed.current = snapshot;
+      markSynced(snapshot);
+      return;
+    }
+    if (snapshot === lastPushed.current) {
       pushPending.current = false;
       return;
     }
-    if (snapshot === lastPushed.current) return;
     lastLocalChange.current = Date.now();
     pushPending.current = true;
     clearTimeout(instantTimer.current);
     const doPush = async retry => {
       try {
         await pushIncremental();
-        lastPushed.current = snapshot;
-        pushPending.current = false;
+        markSynced(snapshot);
         setCloudStatus('ok');
         setLastCloudSync(new Date());
       } catch (e) {
