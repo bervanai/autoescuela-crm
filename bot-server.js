@@ -1817,6 +1817,16 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
+    // "Borrar todo" / "cancelar" / "anular" dentro de la reserva: antes caía
+    // en el catch-all y se ignoraba en silencio (caso real: una alumna se
+    // quedó sin respuesta). Igual que en el resto del bot, las cancelaciones
+    // las gestiona la oficina — el bot no anula nada desde el chat.
+    if (!pideHora.hour && /(cancel\w*|anul\w*|borrar\w*|elimin\w*|\bquitar\b)/.test(norm(body))) {
+      await sendWA(from, cancelRedirectMsg(state.studentName));
+      done();
+      return;
+    }
+
     // Huecos libres actuales, agrupados por día (excluyendo los ya reservados).
     // Cuentan TAMBIÉN las clases que el alumno ya tiene en la base, no solo las
     // de esta conversación: si cierra el chat y vuelve a escribir, antes se le
@@ -1828,6 +1838,11 @@ app.post('/bot', async (req, res) => {
     ])];
     const allFree = await nextFreeSlots(state.profId, 80, suggestFromDate(state), state.pistaHours, state.vehType, nextWeekLastDate());
     const days = daysWithSlots(allFree, bookedDates);
+    // TODOS los días con hueco, SIN excluir los que el alumno ya reservó — para
+    // poder "volver" a un día ya usado si lo pide por su nombre o número (p.ej.
+    // "1 de septiembre" cuando ya tiene una clase ese día y quiere otra). El
+    // avance normal con "otro día" sigue usando `days` y saltándose esos días.
+    const daysAny = daysWithSlots(allFree, []);
 
     if (!days.length) {
       delete pending[from];
@@ -1847,8 +1862,13 @@ app.post('/bot', async (req, res) => {
 
     // Día del MES: si el número coincide con uno de los días ofertados, manda
     // la fecha. Así "miércoles 19" ya no se interpreta como las 19:00.
+    // Si no está entre los pendientes (p.ej. ya reservó ahí), se busca también
+    // en TODOS los días con hueco: pedirlo por su número es una petición
+    // explícita, así que se atiende aunque ya tenga una clase ese día.
     const domDay = dom != null
-      ? (days.find(d => Number(String(d.date).substring(8, 10)) === dom) || null)
+      ? (days.find(d => Number(String(d.date).substring(8, 10)) === dom)
+         || daysAny.find(d => Number(String(d.date).substring(8, 10)) === dom)
+         || null)
       : null;
 
     // Un "no" JUSTO DESPUÉS de reservar significa "no quiero más clases", no
@@ -1929,7 +1949,10 @@ app.post('/bot', async (req, res) => {
         // Preferir un día que SE LE ESTÉ OFRECIENDO. Si no, "el martes" podía
         // resolverse a una fecha fuera de la oferta y el bot respondía "ese día
         // no quedan huecos" para, acto seguido, enseñar ese mismo día.
-        const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
+        // daysAny de respaldo: permite "el martes a las 17:00" aunque ya
+        // tenga una clase ese martes (pedirlo así de explícito es intencional).
+        const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow)
+                       || daysAny.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
         const df = state.weekMode ? dateForDow(dow) : null;
         targetDate = enOferta ? enOferta.date
           : (df ? df.date
@@ -1937,7 +1960,7 @@ app.post('/bot', async (req, res) => {
       }
       if (!targetDate) targetDate = days[0].date;
 
-      const dayObj = days.find(d => d.date === targetDate);
+      const dayObj = days.find(d => d.date === targetDate) || daysAny.find(d => d.date === targetDate);
       const match = dayObj ? dayObj.slots.find(s => s.time === hh) : null;
 
       if (match) {
@@ -2028,14 +2051,19 @@ app.post('/bot', async (req, res) => {
       return;
     }
 
-    // Preguntó por un día concreto (sin hora): enseñar sus horas
+    // Preguntó por un día concreto (sin hora): enseñar sus horas.
+    // Igual que con el día del mes: si ya tiene clase ese día, se busca
+    // también en daysAny para poder "volver" a él si lo pide explícitamente.
     if (dow) {
-      const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
+      const enOferta = days.find(d => new Date(d.date + 'T12:00:00').getDay() === dow)
+                     || daysAny.find(d => new Date(d.date + 'T12:00:00').getDay() === dow);
       const df = state.weekMode ? dateForDow(dow) : null;
       const targetDate = enOferta ? enOferta.date
         : (df ? df.date
               : (allFree.find(s => new Date(s.date + 'T12:00:00').getDay() === dow)?.date || null));
-      const dayObj = targetDate ? days.find(d => d.date === targetDate) : null;
+      const dayObj = targetDate
+        ? (days.find(d => d.date === targetDate) || daysAny.find(d => d.date === targetDate))
+        : null;
       if (dayObj) {
         state.currentDate = dayObj.date;
         await sendWA(from, dayMenuMessage(dayObj, ''));
