@@ -1605,6 +1605,13 @@ app.post('/bot', async (req, res) => {
   // seguidas. Si no indica hora, se dobla su última clase reservada.
   if (/(clase doble|\bdoble\b|dos horas|2 horas|90 ?min|hora y media)/.test(norm(body))) {
     const stD = (await loadStudents()).find(s => s.phone === from && s.active);
+    // Con el bot desactivado para este alumno (bot_active=false), la oficina
+    // gestiona sus clases a mano. Caso real: un alumno de moto A1 con el bot
+    // desactivado escribió "doble" y el bot le reservó igualmente.
+    if (stD && stD.botActive === false) {
+      await sendWA(from, `Hola ${stD.name} 👋 Tu autoescuela gestiona tus clases directamente. Contacta con ellos para reservar o cambiar horario.`);
+      done(); return;
+    }
     if (stD) {
       const profIdD = stD.profId ?? stD.prof_id;
       const pb = parseBookingText(body);
@@ -1675,6 +1682,15 @@ app.post('/bot', async (req, res) => {
     const st = allStudents.find(s => s.phone === from && s.active);
     if (!st) {
       await sendWA(from, `Hola 👋 Soy el asistente de *${SCHOOL_NAME}*. No encuentro tu número en el sistema — contacta con la autoescuela para darte de alta.`);
+      done();
+      return;
+    }
+    // Con el bot desactivado (bot_active=false), la oficina gestiona sus
+    // clases a mano y NO debe reservar nada aunque el alumno escriba pidiendo
+    // clase. Caso real: alumnos marcados como inactivos para el bot seguían
+    // reservando porque este flujo (mensaje espontáneo) no comprobaba el flag.
+    if (st.botActive === false) {
+      await sendWA(from, `Hola ${st.name} 👋 Tu autoescuela gestiona tus clases directamente. Contacta con ellos para reservar o cambiar horario.`);
       done();
       return;
     }
