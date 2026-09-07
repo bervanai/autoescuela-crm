@@ -2163,7 +2163,13 @@ cron.schedule('59 23 * * *', backupNextWeekSchedule, { timezone: 'Europe/Madrid'
 // El bot SOLO inicia conversación los MARTES a las 9:00. La ventana de reserva
 // sigue abierta hasta el jueves 23:59 para que los alumnos respondan, pero el
 // bot no vuelve a escribirles miércoles/jueves.
-cron.schedule('0 9 * * 2', sendBookingRequests, { timezone: 'Europe/Madrid' });
+// force=true: todo alumno activo con el bot activado recibe el mensaje, aunque
+// ya tenga clases puestas a mano para la semana que viene. Antes se saltaba a
+// quien ya tuviera algo reservado — y eso dejaba sin contactar NUNCA a un
+// alumno al que la oficina le mete las clases directamente desde el CRM
+// (caso real: dos alumnos nuevos, dados de alta fuera del martes de campaña,
+// llevaban semanas sin recibir ni un solo mensaje del bot).
+cron.schedule('0 9 * * 2', () => sendBookingRequests(true), { timezone: 'Europe/Madrid' });
 
 // Cada hora → comprobar recordatorios 48h
 cron.schedule('0 * * * *', sendReminders, { timezone: 'Europe/Madrid' });
