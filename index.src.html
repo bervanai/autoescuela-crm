@@ -876,7 +876,27 @@ function Alumnos({students,setStudents,professors,user}){
     setStudents(ss=>ss.map(s=>s.id===id?{...s,botActive:s.botActive===false?true:false}:s));
   };
 
+  // Últimos 9 dígitos, ignorando espacios/prefijo país: mismo criterio que se
+  // usa para detectar duplicados en la base de datos.
+  const normPhone=p=>String(p||'').replace(/\D/g,'').slice(-9);
   const handleSave=form=>{
+    const np=normPhone(form.phone);
+    if(np){
+      // Si ya hay OTRO alumno activo con este teléfono, avisar antes de crear
+      // una ficha nueva: caso real repetido — se creaba un alumno duplicado
+      // con el bot reactivado por defecto, aunque el original estuviera
+      // desactivado a propósito por la oficina.
+      const dup=students.find(s=>s.id!==form.id&&s.active&&normPhone(s.phone)===np);
+      if(dup){
+        const seguir=confirm(
+          `⚠️ Ya existe un alumno activo con este teléfono: "${dup.name}".\n\n`+
+          `Si es la misma persona, cancela y edita su ficha en vez de crear una nueva ` +
+          `(si no, el bot de WhatsApp puede reactivarse para ella/él sin que os deis cuenta).\n\n`+
+          `¿Guardar "${form.name}" como un alumno distinto de todas formas?`
+        );
+        if(!seguir)return;
+      }
+    }
     if(editing) setStudents(ss=>ss.map(s=>s.id===form.id?form:s));
     else setStudents(ss=>[...ss,form]);
     setEditing(null);setAdding(false);
