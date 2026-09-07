@@ -1343,6 +1343,19 @@ async function bookSlot(studentId, studentName, profId, slot, bookerVehType = nu
     console.error(`❌ Reserva NO guardada (se solapa con otra clase): ${studentName} → ${slot.date} ${slot.time}`);
     return null;
   }
+  // Última barrera contra un horario de profesor editado A MITAD de la
+  // conversación: la hora se ofreció cuando era válida, pero si alguien
+  // recorta el horario del profesor mientras el alumno decide, aquí se
+  // vuelve a comprobar justo antes de guardar. Caso real: un profesor tenía
+  // horas por la tarde, se le recortó el horario, y una clase ya ofrecida
+  // en esa franja se hubiera guardado igualmente sin este chequeo.
+  const avail = await loadAvailability();
+  const dow = new Date(`${String(slot.date).substring(0,10)}T12:00:00`).getDay();
+  const hh = String(slot.time).substring(0,5);
+  if (!hoursForProfDaySync(avail, profId, dow).includes(hh)) {
+    console.error(`❌ Reserva NO guardada (${hh} ya no está en el horario del profesor ese día): ${studentName} → ${slot.date} ${slot.time}`);
+    return null;
+  }
   // Última barrera contra las horas BLOQUEADAS por el admin. Los flujos ya
   // filtran antes, pero entre ofrecer la hora y guardarla el admin puede haber
   // bloqueado ese rango. Aquí no se reserva ni por error.
