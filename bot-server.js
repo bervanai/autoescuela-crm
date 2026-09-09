@@ -1299,7 +1299,7 @@ async function sendReminders() {
     // directamente — el recordatorio automático tampoco debe salir. Mismo
     // criterio que ya se aplica al resto de mensajes automáticos del bot.
     const st = students.find(x => x.id === studentId);
-    if (!st || st.botActive === false) return false;
+    if (!st || st.active === false || st.botActive === false) return false;
     const h = hoursUntil(s.date, s.time);
     return h > 0 && h <= 48;
   });
@@ -2297,7 +2297,7 @@ app.get('/status', async (req, res) => {
       const slotType = s.slotType ?? s.slot_type;
       if (!studentId || s.status === 'cancelled' || reminderSent || s.blocked || slotType === 'examen') return false;
       const st = students.find(x => x.id === studentId);
-      if (!st || st.botActive === false) return false;
+      if (!st || st.active === false || st.botActive === false) return false;
       return hoursUntil(s.date, s.time) > 0 && hoursUntil(s.date, s.time) <= 48;
     }).length,
     ventana_reserva: bookingWindowOpen() ? 'ABIERTA (Mar-Jue)' : 'CERRADA',
@@ -2369,6 +2369,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   const st = students.find(s => s.id === req.params.studentId);
   if (!st)             return res.status(404).json({ error: 'Alumno no encontrado' });
   if (!st.phone)       return res.status(400).json({ error: 'El alumno no tiene teléfono' });
+  if (st.active === false)    return res.status(400).json({ error: 'Alumno inactivo' });
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
   // force=1 (o una conversación ya caducada) → reiniciar la charla desde cero.
   const forceRestart = req.query.force === '1' || req.body?.force === true;
@@ -2421,6 +2422,7 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
   if (!st?.phone) return res.status(400).json({ error: 'Alumno sin teléfono' });
   // Mismo criterio que /api/send-booking: con el bot desactivado, la
   // comunicación con este alumno la gestiona la oficina directamente.
+  if (st.active === false)    return res.status(400).json({ error: 'Alumno inactivo' });
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
 
   const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
