@@ -2435,8 +2435,20 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
     await persistPending(st.phone); // sin estado en memoria → borra la fila
   }
   // Si ya está en una conversación abierta (y no forzamos), no reenviar el
-  // saludo (evita el "Hola 👋" duplicado encima de una charla en curso).
-  if (pending[st.phone]) return res.json({ ok: true, student: st.name, note: 'ya en conversación' });
+  // saludo (evita el "Hola 👋" duplicado encima de una charla en curso). Antes
+  // esto devolvía ok:true igual que un envío real, así que el botón del CRM
+  // mostraba éxito aunque no se hubiera mandado nada — exactamente lo que le
+  // pasó a una alumna con una conversación colgada de la campaña automática:
+  // ni el mensaje de campaña ni el botón manual le llegaron nunca, y el CRM
+  // no avisó de ninguno de los dos fallos. Ahora se distingue de un envío
+  // real y el CRM puede ofrecer forzar el reenvío.
+  if (pending[st.phone]) {
+    return res.status(409).json({
+      ok: false,
+      conversacionAbierta: true,
+      error: `${st.name} ya tiene una conversación abierta con el bot. Si no le ha llegado nada, fuerza el reenvío.`,
+    });
+  }
 
   const profId = st.profId ?? st.prof_id;
   const nextMon = ymdLocal(nextWeekMonday());
