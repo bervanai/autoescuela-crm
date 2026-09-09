@@ -130,6 +130,16 @@ const TIME_SLOTS=mkGrid(7,21*60+45,15);
 // y en zonas horarias al este (+UTC) devuelve el DÍA ANTERIOR, lo que hacía que
 // las clases se pintaran/guardaran corridas un día en el panel.
 const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+// Fechas (Lun-Sáb) de "la semana que viene" — la única semana que la pantalla
+// de Disponibilidad edita. Usada también al guardar bloqueos fuera de esa
+// pantalla (pushIncremental), para declarar el mismo alcance seguro a
+// crm_save_data y que nunca borre bloqueos de otras semanas por accidente.
+function nextWeekDatesYMD(){
+  const now=new Date();const dow=now.getDay();
+  const diff=dow===0?1:8-dow;
+  const mon=new Date(now);mon.setDate(now.getDate()+diff);mon.setHours(0,0,0,0);
+  return [0,1,2,3,4,5].map(i=>{const d=new Date(mon);d.setDate(mon.getDate()+i);return ymd(d);});
+}
 
 // ── Borrados EXPLÍCITOS del administrador ──────────────────────────────────
 // El sync SOLO borra en la nube lo que esté aquí. Antes se deducía: "estaba en
@@ -2728,14 +2738,8 @@ function Disponibilidad({user,professors,students,slots,setSlots,abrirMasivas}){
   // ── Bloquear hora semana siguiente ────────────────
   // nextWeek dates (Lun-Sáb)
   function getNextWeekDates(){
-    const now=new Date();const dow=now.getDay();
-    const diff=dow===0?1:8-dow;
-    const mon=new Date(now);mon.setDate(now.getDate()+diff);mon.setHours(0,0,0,0);
-    return [0,1,2,3,4,5].map(i=>{
-      const d=new Date(mon);d.setDate(mon.getDate()+i);
-      const ds=ymd(d);
-      return {date:ds,label:['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][i]};
-    });
+    const LBL=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+    return nextWeekDatesYMD().map((ds,i)=>({date:ds,label:LBL[i]}));
   }
   const nextWeek=getNextWeekDates();
 
@@ -3916,6 +3920,7 @@ function App(){
       p_slots:slotsArr.filter(s=>s.id&&s.date&&s.time).map(normSlotDB),
       p_availability:collectAvailRows(),
       p_blocked:collectBlockedRows(),
+      p_blocked_scope:nextWeekDatesYMD(), // mismo alcance seguro que el resto de guardados
       p_exam_days:load('crm_exam_days_v3',[])||[],
     });
     if(error){
@@ -3937,6 +3942,11 @@ function App(){
     const sb=getSupabase();
     const token=sessionStorage.getItem('crm_token');
     if(!sb||!token)return;
+    // Sin un primer pull confirmado, professors/students/vehicles pueden
+    // estar vacíos (navegador nuevo) o desfasados — y esto de abajo hace un
+    // reemplazo completo de esas tablas. Mejor esperar (el propio reintento
+    // de doPush lo reintenta en unos segundos, para entonces ya habrá pull).
+    if(!hasPulledOnce.current) throw new Error('Esperando la primera sincronización con la nube.');
     // ── 1º ALUMNOS / PROFES / VEHÍCULOS ──────────────────────────────
     // Una clase apunta a su alumno y su profesor: deben existir en la nube
     // ANTES de guardar la clase. Si no, la base de datos la rechaza en
@@ -3952,6 +3962,12 @@ function App(){
       p_slots:null, // las clases van por crm_sync_slots
       p_availability:collectAvailRows(),
       p_blocked:collectBlockedRows(),
+      // Mismo alcance seguro que usa la pantalla de Disponibilidad: sin esto,
+      // CUALQUIER edición (un alumno nuevo, un cambio de profesor…) dispara
+      // este push y, con el crm_save_data antiguo, borraría en silencio los
+      // bloqueos de otras semanas (ver PR del festivo). Con el alcance, el
+      // borrado en el servidor se limita a "la semana que viene".
+      p_blocked_scope:nextWeekDatesYMD(),
       p_exam_days:examDays||[],
     });
     if(eData){
@@ -4114,6 +4130,15 @@ function App(){
   const [lastCloudSync,setLastCloudSync]=useState(null);
   const suppressPush=useRef(false);   // el cambio viene de la nube: no re-subirlo
   const lastLocalChange=useRef(0);    // timestamp de la última edición local
+  // Si el navegador es nuevo (o se limpió), professors/students/vehicles
+  // arrancan vacíos hasta que llega el primer pull. pushIncremental() hace
+  // un reemplazo completo de esas tablas (borra lo que no esté en la lista
+  // local) — si alguien edita algo y esto empuja ANTES de ese primer pull,
+  // se subiría una lista casi vacía y de un plumazo se borraría a todos
+  // los alumnos/profesores/vehículos reales de la nube. hasPulledOnce evita
+  // exactamente eso: bloquea el push hasta confirmar que lo local YA es un
+  // espejo real de la nube, no el arranque en vacío.
+  const hasPulledOnce=useRef(false);
   // hay un cambio local que aún no confirmó la nube. Arranca en true si al
   // abrir se detecta que lo que hay en el navegador NO coincide con lo último
   // que se confirmó subido (p.ej. el navegador se cerró/se coló antes de que
@@ -4141,6 +4166,7 @@ function App(){
       try{
         suppressPush.current=true;
         await loadFromSupabase();
+        hasPulledOnce.current=true;
         if(!cancelled){
           setCloudStatus('ok');setLastCloudSync(new Date());
           window.dispatchEvent(new Event('cloud-pull'));
