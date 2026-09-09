@@ -847,18 +847,17 @@ function Alumnos({students,setStudents,professors,user}){
 
   const botUrl=loadSchool().botUrl||'http://localhost:3002';
 
-  const sendBookingMsg=async(stu,force)=>{
+  // El botón manda "sí o sí": el bot reinicia la conversación si hacía falta
+  // y reintenta el envío solo, así que aquí basta con un único intento con
+  // margen de sobra para esos reintentos (hasta ~12s en el peor caso).
+  const sendBookingMsg=async(stu)=>{
     setSending(s=>({...s,[stu.id]:'sending'}));
     try{
-      const url=`${botUrl}/api/send-booking/${stu.id}`+(force?'?force=1':'');
-      const r=await fetch(url,{method:'POST',signal:AbortSignal.timeout(8000)});
+      const r=await fetch(`${botUrl}/api/send-booking/${stu.id}`,{method:'POST',signal:AbortSignal.timeout(18000)});
       const d=await r.json();
       if(d.ok){
         setSending(s=>({...s,[stu.id]:'ok'}));
         setTimeout(()=>setSending(s=>({...s,[stu.id]:null})),3000);
-      } else if(d.conversacionAbierta && !force){
-        setSending(s=>({...s,[stu.id]:null}));
-        if(confirm(`${d.error}\n\n¿Forzar el reenvío del mensaje ahora?`)) await sendBookingMsg(stu,true);
       } else {
         throw new Error(d.error||'Error');
       }
