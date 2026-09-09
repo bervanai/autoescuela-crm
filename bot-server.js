@@ -1098,6 +1098,20 @@ async function sendBusinessInitiated(to, templateName, params, fallbackText) {
   return sendWA(to, fallbackText);
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// La campaña manda decenas de plantillas seguidas: un fallo puntual de Meta
+// (límite de envíos por segundo, timeout de red) no significa que el número
+// esté mal — con un par de reintentos espaciados se recupera solo, sin
+// dejar a ese alumno sin campaña por una casualidad de un instante.
+async function sendBusinessInitiatedRetry(to, templateName, params, fallbackText, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    if (await sendBusinessInitiated(to, templateName, params, fallbackText)) return true;
+    if (i < attempts - 1) await sleep(4000 * (i + 1));
+  }
+  return false;
+}
+
 async function notifyProf(profId, body) {
   // Buscar el teléfono real del profesor; si no tiene, avisar al admin
   let phone = null;
@@ -1281,8 +1295,8 @@ async function sendBookingRequests(force = false) {
 
     // Mensaje que INICIA el bot → en Meta va la plantilla (solo abre la
     // conversación); al responder, el bot enseña las horas para elegir.
-    const enviado = await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
-    if (!enviado) throw new Error('el proveedor rechazó el envío');
+    const enviado = await sendBusinessInitiatedRetry(st.phone, TPL_PROPUESTA, [st.name], msg);
+    if (!enviado) throw new Error('el proveedor rechazó el envío (tras reintentos)');
     const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
     stt.currentDate = day0.date;
     pending[st.phone] = stt;
@@ -1343,9 +1357,10 @@ async function sendReminders() {
         `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
         `Si no dices nada, la clase se mantiene. ✅`;
 
-      const enviado = await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
-      // Si el proveedor rechaza el envío, NO marcamos reminderSent: así el
-      // próximo ciclo horario lo vuelve a intentar en vez de darlo por hecho.
+      const enviado = await sendBusinessInitiatedRetry(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
+      // Si el proveedor rechaza el envío (tras reintentos), NO marcamos
+      // reminderSent: así el próximo ciclo horario lo vuelve a intentar en
+      // vez de darlo por hecho.
       if (!enviado) throw new Error('el proveedor rechazó el envío');
       await updateSlot(slot.id, { reminderSent: true });
 
