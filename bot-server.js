@@ -2426,28 +2426,15 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
   if (!st.phone)       return res.status(400).json({ error: 'El alumno no tiene teléfono' });
   if (st.active === false)    return res.status(400).json({ error: 'Alumno inactivo' });
   if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
-  // force=1 (o una conversación ya caducada) → reiniciar la charla desde cero.
-  const forceRestart = req.query.force === '1' || req.body?.force === true;
-  const cur = pending[st.phone];
-  const caducada = cur && cur.expires && cur.expires < Date.now();
-  if (cur && (forceRestart || caducada)) {
+  // El botón manual es una orden explícita del personal: "envía esto sí o sí".
+  // Antes, si había una conversación "pendiente" colgada (p. ej. de un intento
+  // de campaña anterior que ni siquiera había llegado a entregarse), el botón
+  // no mandaba nada pero respondía ok:true igual que un envío real — el CRM
+  // mostraba éxito sin que el alumno recibiera un solo mensaje. Ahora un clic
+  // en el botón siempre reinicia la conversación y envía de verdad.
+  if (pending[st.phone]) {
     delete pending[st.phone];
     await persistPending(st.phone); // sin estado en memoria → borra la fila
-  }
-  // Si ya está en una conversación abierta (y no forzamos), no reenviar el
-  // saludo (evita el "Hola 👋" duplicado encima de una charla en curso). Antes
-  // esto devolvía ok:true igual que un envío real, así que el botón del CRM
-  // mostraba éxito aunque no se hubiera mandado nada — exactamente lo que le
-  // pasó a una alumna con una conversación colgada de la campaña automática:
-  // ni el mensaje de campaña ni el botón manual le llegaron nunca, y el CRM
-  // no avisó de ninguno de los dos fallos. Ahora se distingue de un envío
-  // real y el CRM puede ofrecer forzar el reenvío.
-  if (pending[st.phone]) {
-    return res.status(409).json({
-      ok: false,
-      conversacionAbierta: true,
-      error: `${st.name} ya tiene una conversación abierta con el bot. Si no le ha llegado nada, fuerza el reenvío.`,
-    });
   }
 
   const profId = st.profId ?? st.prof_id;
@@ -2467,10 +2454,12 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
     `Vamos a organizar tus clases de la semana que viene.\n\n` +
     dayMenuMessage(day0, '') + `\n\n⚠️ El plazo cierra el jueves.`;
 
-  const enviado = await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+  // Reintenta como la campaña: un "si o si" del personal no puede perderse
+  // por un bache momentáneo del proveedor.
+  const enviado = await sendBusinessInitiatedRetry(st.phone, TPL_PROPUESTA, [st.name], msg);
   if (!enviado) {
-    console.error(`❌ CRM → mensaje manual NO enviado a ${st.name} (${st.phone}): rechazado por el proveedor`);
-    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío. Revisa el teléfono del alumno o inténtalo de nuevo en unos minutos.' });
+    console.error(`❌ CRM → mensaje manual NO enviado a ${st.name} (${st.phone}): rechazado por el proveedor tras reintentos`);
+    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío incluso tras reintentar. Revisa el teléfono del alumno.' });
   }
   const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
   stt.currentDate = day0.date;
@@ -2503,10 +2492,10 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
     `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
     `Si no dices nada, la clase se mantiene. ✅`;
 
-  const enviado = await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
+  const enviado = await sendBusinessInitiatedRetry(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
   if (!enviado) {
-    console.error(`❌ CRM → recordatorio manual NO enviado a ${st.name} (${st.phone}): rechazado por el proveedor`);
-    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío. Revisa el teléfono del alumno o inténtalo de nuevo en unos minutos.' });
+    console.error(`❌ CRM → recordatorio manual NO enviado a ${st.name} (${st.phone}): rechazado por el proveedor tras reintentos`);
+    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío incluso tras reintentar. Revisa el teléfono del alumno.' });
   }
   await updateSlot(slot.id, { reminderSent: true });
 
