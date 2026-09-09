@@ -3126,6 +3126,17 @@ function getWeek(offset = 0) {
     return dd;
   });
 }
+const HORARIO_DAY_KEYS = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
+const HORARIO_DEFAULT_HOURS = ['09:00', '10:00', '11:00', '12:00', '16:00', '17:00', '18:00', '19:00'];
+function horasProfDia(profId, dateStr) {
+  if (!dateStr) return null;
+  const dow = new Date(dateStr + 'T12:00:00').getDay();
+  if (dow === 0) return [];
+  const avail = load('crm_avail_v1', {}) || {};
+  const profAvail = avail[profId];
+  if (!profAvail || !Object.keys(profAvail).length) return HORARIO_DEFAULT_HOURS;
+  return (profAvail[HORARIO_DAY_KEYS[dow]] || []).slice();
+}
 function SlotForm({
   slot,
   students,
@@ -3317,6 +3328,16 @@ function SlotForm({
       if (!f.blocked && !f.studentId) {
         alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.\n\nSi quieres ocupar el hueco sin alumno, marca "Clase bloqueadora".');
         return;
+      }
+      const esNueva = !slot?.id;
+      const movida = esNueva || slot.date !== f.date || slot.time !== f.time || slot.profId !== f.profId;
+      if (!f.blocked && movida) {
+        const horas = horasProfDia(f.profId, f.date);
+        if (horas && !horas.includes(f.time)) {
+          const profName = professors.find(p => p.id === f.profId)?.name || 'Este profesor';
+          alert(`⚠️ ${profName} no tiene la hora ${f.time} disponible ese día.\n\n` + (horas.length ? `Horas disponibles: ${horas.join(', ')}` : 'No trabaja ese día.') + `\n\nSi es una excepción real, primero añade esa hora en Disponibilidad.`);
+          return;
+        }
       }
       onSave(f.blocked ? {
         ...f,

@@ -1475,6 +1475,21 @@ function getWeek(offset=0){
   d.setDate(d.getDate()-d.getDay()+1+offset*7);d.setHours(0,0,0,0);
   return Array.from({length:6},(_,i)=>{const dd=new Date(d);dd.setDate(d.getDate()+i);return dd;});
 }
+// Mismo criterio que el bot (hoursForProfDaySync en bot-server.js): un
+// profesor sin ninguna disponibilidad configurada usa el horario por
+// defecto; si tiene ALGÚN día configurado, un día sin horas = no trabaja
+// ese día (domingo nunca tiene horas, la autoescuela no abre).
+const HORARIO_DAY_KEYS=['dom','lun','mar','mie','jue','vie','sab'];
+const HORARIO_DEFAULT_HOURS=['09:00','10:00','11:00','12:00','16:00','17:00','18:00','19:00'];
+function horasProfDia(profId,dateStr){
+  if(!dateStr)return null;
+  const dow=new Date(dateStr+'T12:00:00').getDay();
+  if(dow===0)return [];
+  const avail=load('crm_avail_v1',{})||{};
+  const profAvail=avail[profId];
+  if(!profAvail||!Object.keys(profAvail).length)return HORARIO_DEFAULT_HOURS;
+  return (profAvail[HORARIO_DAY_KEYS[dow]]||[]).slice();
+}
 function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
   const [f,setF]=useState({studentId:slot?.studentId||'',vehicleId:slot?.vehicleId||'',
     slotType:slot?.slotType||'practica',confirmed:slot?.confirmed||false,blocked:slot?.blocked||false,
@@ -1551,6 +1566,28 @@ function SlotForm({slot,students,vehicles,professors,isAdmin,onSave,onClose}){
             if(!f.date){alert('⚠️ Pon la fecha de la clase.');return;}
             if(!f.profId){alert('⚠️ Selecciona el profesor.');return;}
             if(!f.blocked&&!f.studentId){alert('⚠️ Selecciona un alumno.\n\nUna clase sin alumno no se puede guardar en la nube y se perdería al recargar.\n\nSi quieres ocupar el hueco sin alumno, marca "Clase bloqueadora".');return;}
+            // Una clase de verdad (no bloqueadora) solo puede caer en una hora que
+            // el profesor de verdad tiene disponible ese día — el mismo horario que
+            // ya respeta el bot al reservar. Una "clase bloqueadora" sí puede ir a
+            // cualquier hora, porque es precisamente para marcar tiempo del
+            // profesor como no disponible (p.ej. una hora suelta o el día entero).
+            // Si es una clase YA EXISTENTE (tiene id real) y no se ha movido de
+            // fecha/hora/profesor, no se vuelve a validar: si quedó en una hora que
+            // hoy ya no está en el horario (p.ej. porque el horario del profesor
+            // cambió después), sigue pudiéndose editar (confirmar, cambiar alumno,
+            // etc.) sin quedar bloqueada por un cambio de horario posterior.
+            const esNueva=!slot?.id;
+            const movida=esNueva||slot.date!==f.date||slot.time!==f.time||slot.profId!==f.profId;
+            if(!f.blocked&&movida){
+              const horas=horasProfDia(f.profId,f.date);
+              if(horas&&!horas.includes(f.time)){
+                const profName=professors.find(p=>p.id===f.profId)?.name||'Este profesor';
+                alert(`⚠️ ${profName} no tiene la hora ${f.time} disponible ese día.\n\n`+
+                  (horas.length?`Horas disponibles: ${horas.join(', ')}`:'No trabaja ese día.')+
+                  `\n\nSi es una excepción real, primero añade esa hora en Disponibilidad.`);
+                return;
+              }
+            }
             onSave(f.blocked?{...f,studentId:'',vehicleId:'',confirmed:true}:f);
           }} className={btnO}><Icon name="save" size={17}/>Guardar</button>
         </div>
