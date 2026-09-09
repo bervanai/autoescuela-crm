@@ -6086,9 +6086,11 @@ function Disponibilidad({
       date: b.date,
       hour: b.hour
     }));
+    const blockedScope = nextWeek.map(w => w.date);
     return {
       availRows,
-      blockedRows
+      blockedRows,
+      blockedScope
     };
   }
   useEffect(() => {
@@ -6107,7 +6109,8 @@ function Disponibilidad({
     cloudTimer.current = setTimeout(async () => {
       const {
         availRows,
-        blockedRows
+        blockedRows,
+        blockedScope
       } = buildCloudRows();
       try {
         const {
@@ -6115,7 +6118,8 @@ function Disponibilidad({
         } = await sb.rpc('crm_save_data', {
           p_token: token,
           p_availability: availRows,
-          p_blocked: blockedRows
+          p_blocked: blockedRows,
+          p_blocked_scope: blockedScope
         });
         if (error) throw error;
         setCloudErr('');
@@ -6137,7 +6141,8 @@ function Disponibilidad({
       clearTimeout(cloudTimer.current);
       const {
         availRows,
-        blockedRows
+        blockedRows,
+        blockedScope
       } = buildCloudRows();
       try {
         const {
@@ -6145,7 +6150,8 @@ function Disponibilidad({
         } = await sb.rpc('crm_save_data', {
           p_token: token,
           p_availability: availRows,
-          p_blocked: blockedRows
+          p_blocked: blockedRows,
+          p_blocked_scope: blockedScope
         });
         if (error) throw error;
       } catch (e) {

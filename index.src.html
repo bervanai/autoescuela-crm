@@ -3043,7 +3043,13 @@ function Disponibilidad({user,professors,students,slots,setSlots,abrirMasivas}){
     const blockedRows=Object.values(blocked)
       .filter(b=>b&&b.profId&&b.date&&b.hour&&(isAdmin||b.profId===viewProf))
       .map(b=>({prof_id:b.profId,date:b.date,hour:b.hour}));
-    return {availRows,blockedRows};
+    // El servidor solo borra bloqueos DENTRO de este alcance antes de
+    // reinsertar (ver crm_save_data): así, un bloqueo de otra semana —p.ej.
+    // un festivo bloqueado con antelación— nunca se pierde por guardar un
+    // cambio de "la semana que viene", que es lo único que esta pantalla
+    // edita de verdad.
+    const blockedScope=nextWeek.map(w=>w.date);
+    return {availRows,blockedRows,blockedScope};
   }
   useEffect(()=>{
     if(firstRun.current){firstRun.current=false;return;}
@@ -3053,10 +3059,10 @@ function Disponibilidad({user,professors,students,slots,setSlots,abrirMasivas}){
     if(!sb||!token)return;
     clearTimeout(cloudTimer.current);
     cloudTimer.current=setTimeout(async()=>{
-      const {availRows,blockedRows}=buildCloudRows();
+      const {availRows,blockedRows,blockedScope}=buildCloudRows();
       try{
         const {error}=await sb.rpc('crm_save_data',{
-          p_token:token,p_availability:availRows,p_blocked:blockedRows,
+          p_token:token,p_availability:availRows,p_blocked:blockedRows,p_blocked_scope:blockedScope,
         });
         if(error)throw error;
         setCloudErr('');
@@ -3077,12 +3083,13 @@ function Disponibilidad({user,professors,students,slots,setSlots,abrirMasivas}){
     const token=sessionStorage.getItem('crm_token');
     if(sb&&token){
       clearTimeout(cloudTimer.current); // cancelar el push pendiente: este lo cubre
-      const {availRows,blockedRows}=buildCloudRows();
+      const {availRows,blockedRows,blockedScope}=buildCloudRows();
       try{
         const {error}=await sb.rpc('crm_save_data',{
           p_token:token,
           p_availability:availRows,
           p_blocked:blockedRows,
+          p_blocked_scope:blockedScope,
         });
         if(error)throw error;
       }catch(e){
