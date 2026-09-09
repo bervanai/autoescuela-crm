@@ -988,6 +988,14 @@ async function logMessage(phone, direction, body) {
   } catch (e) { console.error('logMessage:', e.message); }
 }
 
+// Todas las funciones de envío de abajo devuelven true/false según si el
+// proveedor (Meta/Twilio) aceptó de verdad el mensaje. Antes ninguna lo
+// hacía: un rechazo de Meta (número no válido, plantilla no aprobada,
+// límite de envíos...) quedaba solo en los logs de Railway, y tanto el
+// botón manual del CRM como la campaña automática lo daban por enviado sin
+// que nadie se enterara. Caso real: una alumna con todo correcto en el CRM
+// (activa, bot activo, teléfono válido) nunca recibió nada, ni por campaña
+// ni al pulsar el botón manual, y no había ningún rastro del fallo.
 async function sendWA(to, body) {
   to = normalizePhone(to);
   logMessage(to, 'out', body); // registro para el historial (no bloquea el envío)
@@ -995,6 +1003,7 @@ async function sendWA(to, body) {
   if (PROVIDER === 'meta')   return sendWA_meta(to, body);
   if (PROVIDER === 'twilio') return sendWA_twilio(to, body);
   console.log(`🚫 (sin proveedor) mensaje NO enviado a ${to}: ${body.substring(0, 60).replace(/\n/g, ' ')}`);
+  return false;
 }
 
 // ── Envío por SMS (Twilio) — sin Meta, sin "join", funciona hoy ──
@@ -1004,8 +1013,10 @@ async function sendSMS(to, body) {
     const txt = body.replace(/\*/g, '');
     await client.messages.create({ from: SMS_NUM, to, body: txt });
     console.log(`📤 (sms) → ${to}: ${txt.substring(0, 80).replace(/\n/g, ' ')}`);
+    return true;
   } catch (e) {
     console.error(`❌ SMS → ${to}:`, e.message);
+    return false;
   }
 }
 
@@ -1026,11 +1037,13 @@ async function sendWA_meta(to, body) {
     if (!r.ok) {
       const err = await r.text();
       console.error(`❌ Meta → ${to}: ${r.status} ${err.substring(0, 200)}`);
-      return;
+      return false;
     }
     console.log(`📤 (meta) → ${to}: ${body.substring(0, 80).replace(/\n/g, ' ')}`);
+    return true;
   } catch (e) {
     console.error(`❌ Meta → ${to}:`, e.message);
+    return false;
   }
 }
 
@@ -1053,9 +1066,16 @@ async function sendTemplateMeta(to, templateName, params = [], lang = 'es') {
       headers: { 'Authorization': `Bearer ${META_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!r.ok) console.error(`❌ Meta plantilla → ${to}: ${r.status} ${(await r.text()).substring(0, 200)}`);
-    else console.log(`📤 (meta·plantilla ${templateName}) → ${to}`);
-  } catch (e) { console.error(`❌ Meta plantilla → ${to}:`, e.message); }
+    if (!r.ok) {
+      console.error(`❌ Meta plantilla → ${to}: ${r.status} ${(await r.text()).substring(0, 200)}`);
+      return false;
+    }
+    console.log(`📤 (meta·plantilla ${templateName}) → ${to}`);
+    return true;
+  } catch (e) {
+    console.error(`❌ Meta plantilla → ${to}:`, e.message);
+    return false;
+  }
 }
 
 // ── Envío por Twilio ──
@@ -1063,8 +1083,10 @@ async function sendWA_twilio(to, body) {
   try {
     await client.messages.create({ from: SANDBOX_NUM, to: `whatsapp:${to}`, body });
     console.log(`📤 (twilio) → ${to}: ${body.substring(0, 80).replace(/\n/g, ' ')}`);
+    return true;
   } catch (e) {
     console.error(`❌ Twilio → ${to}:`, e.message);
+    return false;
   }
 }
 
@@ -1221,6 +1243,7 @@ async function sendBookingRequests(force = false) {
 
   const nextMon = ymdLocal(nextWeekMonday());
   let fallidos = 0;
+  const fallidosNombres = [];
   for (const st of students) {
     // Red de seguridad por alumno: si uno falla (teléfono raro, bache de Meta,
     // error puntual de BD) se registra y la campaña SIGUE con los demás. Antes
@@ -1258,7 +1281,8 @@ async function sendBookingRequests(force = false) {
 
     // Mensaje que INICIA el bot → en Meta va la plantilla (solo abre la
     // conversación); al responder, el bot enseña las horas para elegir.
-    await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+    const enviado = await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+    if (!enviado) throw new Error('el proveedor rechazó el envío');
     const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
     stt.currentDate = day0.date;
     pending[st.phone] = stt;
@@ -1266,6 +1290,7 @@ async function sendBookingRequests(force = false) {
     sent++;
     } catch (e) {
       fallidos++;
+      fallidosNombres.push(st.name);
       console.error(`❌ Campaña: fallo con ${st.name} (${st.phone}): ${e && e.message ? e.message : e}`);
     }
   }
@@ -1273,8 +1298,8 @@ async function sendBookingRequests(force = false) {
               (fallidos ? ` · ⚠️ ${fallidos} con error` : ''));
   if (fallidos) {
     await sendWA(NOTIFY_ADMIN,
-      `⚠️ *Campaña de ${SCHOOL_NAME}*\n\n${sent} alumnos contactados, pero ${fallidos} han fallado.\n` +
-      `Revisa el log de Railway para ver cuáles.`).catch(() => {});
+      `⚠️ *Campaña de ${SCHOOL_NAME}*\n\n${sent} alumnos contactados, pero ${fallidos} han fallado:\n` +
+      `${fallidosNombres.join(', ')}\n\nRevisa el log de Railway para más detalle.`).catch(() => {});
   }
 }
 
@@ -1287,7 +1312,8 @@ async function sendReminders() {
 
   const slots    = await loadSlots();
   const students = await loadStudents();
-  let sent = 0;
+  let sent = 0, fallidos = 0;
+  const fallidosNombres = [];
 
   const toRemind = slots.filter(s => {
     const studentId = s.studentId ?? s.student_id;
@@ -1309,29 +1335,43 @@ async function sendReminders() {
     const st = students.find(s => s.id === studentId);
     if (!st?.phone) continue;
 
-    const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
-    const msg =
-      `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
-      `Hola ${st.name}, tienes clase el *${cita}*.\n\n` +
-      `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
-      `Si no dices nada, la clase se mantiene. ✅`;
+    try {
+      const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
+      const msg =
+        `⏰ *Recordatorio de ${SCHOOL_NAME}*\n\n` +
+        `Hola ${st.name}, tienes clase el *${cita}*.\n\n` +
+        `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
+        `Si no dices nada, la clase se mantiene. ✅`;
 
-    await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
-    await updateSlot(slot.id, { reminderSent: true });
+      const enviado = await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
+      // Si el proveedor rechaza el envío, NO marcamos reminderSent: así el
+      // próximo ciclo horario lo vuelve a intentar en vez de darlo por hecho.
+      if (!enviado) throw new Error('el proveedor rechazó el envío');
+      await updateSlot(slot.id, { reminderSent: true });
 
-    const profId = slot.profId ?? slot.prof_id;
-    pending[st.phone] = {
-      type:        'reminder',
-      studentId:   st.id,
-      studentName: st.name,
-      profId:      profId,
-      slotId:      slot.id,
-      expires:     Date.now() + 50 * 3600000,
-    };
-    sent++;
+      const profId = slot.profId ?? slot.prof_id;
+      pending[st.phone] = {
+        type:        'reminder',
+        studentId:   st.id,
+        studentName: st.name,
+        profId:      profId,
+        slotId:      slot.id,
+        expires:     Date.now() + 50 * 3600000,
+      };
+      sent++;
+    } catch (e) {
+      fallidos++;
+      fallidosNombres.push(st.name);
+      console.error(`❌ Recordatorio: fallo con ${st.name} (${st.phone}): ${e && e.message ? e.message : e}`);
+    }
   }
 
-  console.log(`✅ Recordatorios enviados: ${sent}`);
+  console.log(`✅ Recordatorios enviados: ${sent}` + (fallidos ? ` · ⚠️ ${fallidos} con error` : ''));
+  if (fallidos) {
+    await sendWA(NOTIFY_ADMIN,
+      `⚠️ *Recordatorios de ${SCHOOL_NAME}*\n\n${sent} enviados, pero ${fallidos} han fallado:\n` +
+      `${fallidosNombres.join(', ')}\n\nSe reintentará en la próxima hora.`).catch(() => {});
+  }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2400,7 +2440,11 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
     `Vamos a organizar tus clases de la semana que viene.\n\n` +
     dayMenuMessage(day0, '') + `\n\n⚠️ El plazo cierra el jueves.`;
 
-  await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+  const enviado = await sendBusinessInitiated(st.phone, TPL_PROPUESTA, [st.name], msg);
+  if (!enviado) {
+    console.error(`❌ CRM → mensaje manual NO enviado a ${st.name} (${st.phone}): rechazado por el proveedor`);
+    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío. Revisa el teléfono del alumno o inténtalo de nuevo en unos minutos.' });
+  }
   const stt = makeSuggestState({ ...st, profId }, free, true, pistaHours);
   stt.currentDate = day0.date;
   pending[st.phone] = stt;
@@ -2432,7 +2476,11 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
     `Si no puedes venir, avisa a la oficina: *${OFFICE_PHONE}*.\n` +
     `Si no dices nada, la clase se mantiene. ✅`;
 
-  await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
+  const enviado = await sendBusinessInitiated(st.phone, TPL_RECORDATORIO, [st.name, cita], msg);
+  if (!enviado) {
+    console.error(`❌ CRM → recordatorio manual NO enviado a ${st.name} (${st.phone}): rechazado por el proveedor`);
+    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío. Revisa el teléfono del alumno o inténtalo de nuevo en unos minutos.' });
+  }
   await updateSlot(slot.id, { reminderSent: true });
 
   const profId = slot.profId ?? slot.prof_id;
@@ -2472,7 +2520,11 @@ app.post('/api/notify-cancel', async (req, res) => {
     `❌ *Clase cancelada — ${SCHOOL_NAME}*\n\n` +
     `Hola ${name || ''}, tu clase del *${cita}* ha sido *cancelada* por la autoescuela.\n\n` +
     `Si quieres reprogramarla, escríbeme *hola* y te ayudo. 🚗`;
-  await sendBusinessInitiated(to, TPL_CANCELADA, [name || '', cita], msg);
+  const enviado = await sendBusinessInitiated(to, TPL_CANCELADA, [name || '', cita], msg);
+  if (!enviado) {
+    console.error(`❌ CRM → aviso de cancelación NO enviado a ${name || to}: rechazado por el proveedor`);
+    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío del aviso de cancelación.' });
+  }
   console.log(`📤 CRM → aviso de cancelación enviado a ${name || to}`);
   res.json({ ok: true });
 });
@@ -2505,7 +2557,11 @@ app.post('/api/notify-move', async (req, res) => {
     `Hola ${name || ''}, tu clase del *${citaVieja}* se ha *movido*.\n` +
     `Nueva cita: *${citaNueva}*.\n\n` +
     `Si no te viene bien, escríbeme *hola* y lo reorganizamos. 🚗`;
-  await sendBusinessInitiated(to, TPL_MOVIDA, [name || '', citaVieja, citaNueva], msg);
+  const enviado = await sendBusinessInitiated(to, TPL_MOVIDA, [name || '', citaVieja, citaNueva], msg);
+  if (!enviado) {
+    console.error(`❌ CRM → aviso de cambio de horario NO enviado a ${name || to}: rechazado por el proveedor`);
+    return res.status(502).json({ error: 'El proveedor de WhatsApp rechazó el envío del aviso de cambio de horario.' });
+  }
   console.log(`📤 CRM → aviso de cambio de horario enviado a ${name || to}`);
   res.json({ ok: true });
 });
