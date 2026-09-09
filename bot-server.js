@@ -1233,17 +1233,18 @@ async function sendBookingRequests(force = false) {
   // campaña por una conversación vieja que ya no está viva.
   await purgeExpiredPending();
 
-  // Además: cualquier hilo de tipo "suggest" que quede colgado se limpia
-  // igual, sin mirar su caducidad. thuExpiry() calcula "el próximo jueves"
-  // desde el momento en que se tocó el hilo; si se tocó fuera de ventana
-  // (p.ej. un viernes), le da una caducidad de casi una semana entera y
-  // sobrevive hasta la campaña siguiente, saltándose a ese alumno sin que
-  // nadie se entere (pasó de verdad: Covadonga Félix, tocado el viernes
-  // 14/08, caducaba el 20/08). En el momento en que la campaña va a
-  // arrancar, ningún hilo de reserva puede ser legítimo todavía — los
-  // crea ella misma a partir de aquí — así que se descartan todos.
+  // Cualquier hilo colgado se limpia antes de arrancar. Antes solo se
+  // limpiaban los de tipo "suggest" (thuExpiry() calcula "el próximo jueves"
+  // desde el momento en que se tocó el hilo, y si se tocó fuera de ventana
+  // le da una caducidad de casi una semana entera y sobrevive hasta la
+  // campaña siguiente — pasó de verdad: Covadonga Félix, tocado el viernes
+  // 14/08, caducaba el 20/08). Pero cualquier OTRO tipo de hilo colgado
+  // (p.ej. un "reminder" que nunca se cerró) hacía que el bucle de abajo
+  // saltara a ese alumno en silencio, sin contarlo ni avisar a nadie — la
+  // campaña es "sí o sí, todos los activos", así que en un run forzado
+  // (el cron de los martes) no puede quedar ningún hilo bloqueando a nadie.
   for (const [phone, st] of Object.entries(pending)) {
-    if (st && st.type === 'suggest') {
+    if (st && (force || st.type === 'suggest')) {
       delete pending[phone];
       persistPending(phone).catch(() => {});
     }
@@ -1263,7 +1264,15 @@ async function sendBookingRequests(force = false) {
     // error puntual de BD) se registra y la campaña SIGUE con los demás. Antes
     // un solo fallo cortaba el envío y el resto se quedaba sin mensaje.
     try {
-    if (pending[st.phone]) { console.log(`⏭️  ${st.name} ya en conversación`); continue; }
+    // Solo puede quedar pendiente aquí si algo lo creó DURANTE este mismo
+    // run (p.ej. respondió justo ahora a otro hilo). Se cuenta y se avisa,
+    // en vez del console.log silencioso de antes.
+    if (pending[st.phone]) {
+      fallidos++;
+      fallidosNombres.push(`${st.name} (conversación nueva en curso)`);
+      console.log(`⏭️  ${st.name} ya en conversación (creada durante este run)`);
+      continue;
+    }
 
     // Si ya tiene clases la semana que viene, no molestar en los recordatorios
     const yaReservo = slots.some(
@@ -1277,7 +1286,21 @@ async function sendBookingRequests(force = false) {
     const pistaHours = await pistaFilterFor(st);
     const free = await nextFreeSlots(profId, 8, nextMon, pistaHours, st.vehicleType, nextWeekLastDate());
     if (!free.length) {
-      await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Contacta con la autoescuela.`);
+      // Este aviso va como texto libre (no hay plantilla aprobada para "sin
+      // huecos"), así que si el alumno lleva más de 24h sin escribir, Meta lo
+      // rechaza — y antes eso pasaba sin dejar rastro. Ahora, si falla, se
+      // cuenta como fallo real: sin plantilla no hay forma de garantizar la
+      // entrega por código, así que hace falta que la oficina lo llame.
+      let avisoOk = false;
+      for (let i = 0; i < 3 && !avisoOk; i++) {
+        avisoOk = await sendWA(st.phone, `Hola ${st.name} 👋\nNo hay huecos disponibles la semana que viene. Contacta con la autoescuela.`);
+        if (!avisoOk && i < 2) await sleep(4000 * (i + 1));
+      }
+      if (!avisoOk) {
+        fallidos++;
+        fallidosNombres.push(`${st.name} (sin huecos, aviso no entregado — llamar)`);
+        console.error(`❌ Campaña: aviso de "sin huecos" NO entregado a ${st.name} (${st.phone})`);
+      }
       continue;
     }
 
