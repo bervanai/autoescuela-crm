@@ -2419,6 +2419,9 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
   const students  = await loadStudents();
   const st = students.find(s => s.id === studentId);
   if (!st?.phone) return res.status(400).json({ error: 'Alumno sin teléfono' });
+  // Mismo criterio que /api/send-booking: con el bot desactivado, la
+  // comunicación con este alumno la gestiona la oficina directamente.
+  if (st.botActive === false) return res.status(400).json({ error: 'Bot desactivado para este alumno' });
 
   const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
   const msg =
