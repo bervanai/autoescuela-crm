@@ -171,6 +171,19 @@ const mkGrid = (startH, endMin, step) => {
 };
 const TIME_SLOTS = mkGrid(7, 21 * 60 + 45, 15);
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function nextWeekDatesYMD() {
+  const now = new Date();
+  const dow = now.getDay();
+  const diff = dow === 0 ? 1 : 8 - dow;
+  const mon = new Date(now);
+  mon.setDate(now.getDate() + diff);
+  mon.setHours(0, 0, 0, 0);
+  return [0, 1, 2, 3, 4, 5].map(i => {
+    const d = new Date(mon);
+    d.setDate(mon.getDate() + i);
+    return ymd(d);
+  });
+}
 const borradosExplicitos = new Set();
 const marcarBorrada = id => {
   if (id) borradosExplicitos.add(id);
@@ -5719,21 +5732,11 @@ function Disponibilidad({
     setSaved(false);
   }
   function getNextWeekDates() {
-    const now = new Date();
-    const dow = now.getDay();
-    const diff = dow === 0 ? 1 : 8 - dow;
-    const mon = new Date(now);
-    mon.setDate(now.getDate() + diff);
-    mon.setHours(0, 0, 0, 0);
-    return [0, 1, 2, 3, 4, 5].map(i => {
-      const d = new Date(mon);
-      d.setDate(mon.getDate() + i);
-      const ds = ymd(d);
-      return {
-        date: ds,
-        label: ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][i]
-      };
-    });
+    const LBL = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    return nextWeekDatesYMD().map((ds, i) => ({
+      date: ds,
+      label: LBL[i]
+    }));
   }
   const nextWeek = getNextWeekDates();
   function toggleBlock(date, hour) {
@@ -7796,6 +7799,7 @@ function App() {
       p_slots: slotsArr.filter(s => s.id && s.date && s.time).map(normSlotDB),
       p_availability: collectAvailRows(),
       p_blocked: collectBlockedRows(),
+      p_blocked_scope: nextWeekDatesYMD(),
       p_exam_days: load('crm_exam_days_v3', []) || []
     });
     if (error) {
@@ -7813,6 +7817,7 @@ function App() {
     const sb = getSupabase();
     const token = sessionStorage.getItem('crm_token');
     if (!sb || !token) return;
+    if (!hasPulledOnce.current) throw new Error('Esperando la primera sincronización con la nube.');
     const normProf = p => {
       const vids = p.vehicleIds && p.vehicleIds.length ? p.vehicleIds : p.vehicleId || p.vehicle_id ? [p.vehicleId || p.vehicle_id] : [];
       return {
@@ -7862,6 +7867,7 @@ function App() {
       p_slots: null,
       p_availability: collectAvailRows(),
       p_blocked: collectBlockedRows(),
+      p_blocked_scope: nextWeekDatesYMD(),
       p_exam_days: examDays || []
     });
     if (eData) {
@@ -8033,6 +8039,7 @@ function App() {
   const [lastCloudSync, setLastCloudSync] = useState(null);
   const suppressPush = useRef(false);
   const lastLocalChange = useRef(0);
+  const hasPulledOnce = useRef(false);
   const pushPending = useRef((() => {
     try {
       if (!user || user.role !== 'admin') return false;
@@ -8055,6 +8062,7 @@ function App() {
       try {
         suppressPush.current = true;
         await loadFromSupabase();
+        hasPulledOnce.current = true;
         if (!cancelled) {
           setCloudStatus('ok');
           setLastCloudSync(new Date());
