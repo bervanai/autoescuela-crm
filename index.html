@@ -1628,15 +1628,16 @@ function Alumnos({
   const [deleting, setDeleting] = useState(null);
   const [sending, setSending] = useState({});
   const botUrl = loadSchool().botUrl || 'http://localhost:3002';
-  const sendBookingMsg = async stu => {
+  const sendBookingMsg = async (stu, force) => {
     setSending(s => ({
       ...s,
       [stu.id]: 'sending'
     }));
     try {
-      const r = await fetch(`${botUrl}/api/send-booking/${stu.id}`, {
+      const url = `${botUrl}/api/send-booking/${stu.id}` + (force ? '?force=1' : '');
+      const r = await fetch(url, {
         method: 'POST',
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(8000)
       });
       const d = await r.json();
       if (d.ok) {
@@ -1648,6 +1649,12 @@ function Alumnos({
           ...s,
           [stu.id]: null
         })), 3000);
+      } else if (d.conversacionAbierta && !force) {
+        setSending(s => ({
+          ...s,
+          [stu.id]: null
+        }));
+        if (confirm(`${d.error}\n\n¿Forzar el reenvío del mensaje ahora?`)) await sendBookingMsg(stu, true);
       } else {
         throw new Error(d.error || 'Error');
       }
