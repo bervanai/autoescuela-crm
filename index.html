@@ -3395,9 +3395,38 @@ function Horario({
   const week = getWeek(off);
   const today = ymd(new Date());
   const visProfs = vProf === 'all' ? professors : professors.filter(p => p.id === vProf);
+  const examEntryFor = d => {
+    const e = (examDays || []).find(x => (typeof x === 'string' ? x : x.date) === d);
+    if (!e) return null;
+    return typeof e === 'string' ? {
+      date: e,
+      from: '09:00',
+      to: '14:00'
+    } : e;
+  };
+  const examBlocksHour = (d, t) => {
+    const e = examEntryFor(d);
+    return !!e && t >= e.from && t < e.to;
+  };
   const toggleExam = d => {
     if (!isAdmin) return;
-    setExamDays(ds => ds.includes(d) ? ds.filter(x => x !== d) : [...ds, d]);
+    if (examEntryFor(d)) {
+      setExamDays(ds => ds.filter(x => (typeof x === 'string' ? x : x.date) !== d));
+      return;
+    }
+    const from = prompt('¿A qué hora empieza el examen ese día? (HH:MM)', '09:00');
+    if (from === null) return;
+    const to = prompt('¿A qué hora termina? (HH:MM)', '14:00');
+    if (to === null) return;
+    if (!/^\d{2}:\d{2}$/.test(from) || !/^\d{2}:\d{2}$/.test(to) || from >= to) {
+      alert('Horas no válidas. Usa el formato HH:MM (por ejemplo 09:00) y que la hora de fin sea posterior a la de inicio.');
+      return;
+    }
+    setExamDays(ds => [...ds, {
+      date: d,
+      from,
+      to
+    }]);
   };
   const undoStack = useRef([]);
   const [canUndo, setCanUndo] = useState(false);
@@ -3711,7 +3740,7 @@ function Horario({
     });
     const DAY_FULL = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
     const dayKeys = week.map(d => ymd(d));
-    const examCol = dayKeys.map(ds => examDays.includes(ds));
+    const examCol = dayKeys.map(ds => !!examEntryFor(ds));
     const filterLabel = fType === 'practica' ? ' · Solo prácticas' : fType === 'examen' ? ' · Solo exámenes' : '';
     const vehBadge = vt => vt === 'automatico' ? '<span style="background:#7c3aed;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;-webkit-print-color-adjust:exact;print-color-adjust:exact">AUT</span>' : vt === 'moto' ? '<span style="font-size:11px;margin-left:4px">🛵</span>' : vt === 'camion' ? '<span style="font-size:11px;margin-left:4px">🚛</span>' : '';
     const tables = profsToExport.map(prof => {
@@ -4134,7 +4163,8 @@ function Horario({
     }
   }), week.map((d, di) => {
     const ds = ymd(d);
-    const isExam = examDays.includes(ds);
+    const examEntry = examEntryFor(ds);
+    const isExam = !!examEntry;
     const isToday = ds === today;
     const cs = vProf === 'all' ? visProfs.length : 1;
     return React.createElement("th", {
@@ -4172,7 +4202,7 @@ function Horario({
         color: '#ea580c',
         fontWeight: 700
       }
-    }, "EXAMEN")));
+    }, "EXAMEN ", examEntry.from, "-", examEntry.to)));
   })), vProf === 'all' && React.createElement("tr", null, React.createElement("th", null), week.map((_, di) => visProfs.map(prof => React.createElement("th", {
     key: `sh_${di}_${prof.id}`,
     style: {
@@ -4199,7 +4229,7 @@ function Horario({
     }
   }, time), week.map((d, di) => {
     const ds = ymd(d);
-    const isExam = examDays.includes(ds);
+    const isExam = examBlocksHour(ds, time);
     return visProfs.map(prof => {
       const cs = Object.values(slots).filter(s => s.date === ds && s.time === time && s.profId === prof.id && (fType === 'all' || s.slotType === fType));
       return React.createElement("td", {
