@@ -1622,7 +1622,32 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
   const today=ymd(new Date());
   const visProfs=vProf==='all'?professors:professors.filter(p=>p.id===vProf);
 
-  const toggleExam=d=>{if(!isAdmin)return;setExamDays(ds=>ds.includes(d)?ds.filter(x=>x!==d):[...ds,d]);};
+  // examDays: array de {date,from,to}. Formato antiguo (solo la fecha, día
+  // entero) se sigue leyendo con un rango por defecto para no romper lo ya
+  // guardado. Los exámenes son solo por la mañana: bloquear el día completo
+  // dejaba la tarde inutilizable sin motivo, así que ahora se elige el rango.
+  const examEntryFor=d=>{
+    const e=(examDays||[]).find(x=>(typeof x==='string'?x:x.date)===d);
+    if(!e)return null;
+    return typeof e==='string'?{date:e,from:'09:00',to:'14:00'}:e;
+  };
+  const examBlocksHour=(d,t)=>{const e=examEntryFor(d);return !!e&&t>=e.from&&t<e.to;};
+  const toggleExam=d=>{
+    if(!isAdmin)return;
+    if(examEntryFor(d)){
+      setExamDays(ds=>ds.filter(x=>(typeof x==='string'?x:x.date)!==d));
+      return;
+    }
+    const from=prompt('¿A qué hora empieza el examen ese día? (HH:MM)','09:00');
+    if(from===null)return;
+    const to=prompt('¿A qué hora termina? (HH:MM)','14:00');
+    if(to===null)return;
+    if(!/^\d{2}:\d{2}$/.test(from)||!/^\d{2}:\d{2}$/.test(to)||from>=to){
+      alert('Horas no válidas. Usa el formato HH:MM (por ejemplo 09:00) y que la hora de fin sea posterior a la de inicio.');
+      return;
+    }
+    setExamDays(ds=>[...ds,{date:d,from,to}]);
+  };
   // ── DESHACER: guarda el estado del horario ANTES de cada cambio, para poder
   // revertir si algo se hace mal (borrados, acciones masivas, mover, crear…).
   const undoStack=useRef([]);
@@ -1819,7 +1844,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
     const genLabel=new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
     const DAY_FULL=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
     const dayKeys=week.map(d=>ymd(d));
-    const examCol=dayKeys.map(ds=>examDays.includes(ds));
+    const examCol=dayKeys.map(ds=>!!examEntryFor(ds));
     const filterLabel=fType==='practica'?' · Solo prácticas':fType==='examen'?' · Solo exámenes':'';
     const vehBadge=vt=>vt==='automatico'
         ?'<span style="background:#7c3aed;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;-webkit-print-color-adjust:exact;print-color-adjust:exact">AUT</span>'
@@ -2012,7 +2037,8 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
               <th style={{width:54,padding:'4px 6px',color:'#94a3b8',fontSize:11,fontWeight:500}}></th>
               {week.map((d,di)=>{
                 const ds=ymd(d);
-                const isExam=examDays.includes(ds);
+                const examEntry=examEntryFor(ds);
+                const isExam=!!examEntry;
                 const isToday=ds===today;
                 const cs=vProf==='all'?visProfs.length:1;
                 return(
@@ -2024,7 +2050,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
                         transition:'background .15s'}}>
                       <div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>{DAY_NAMES[di]}</div>
                       <div style={{fontSize:14,fontWeight:800,color:isToday?'#2563eb':isExam?'#c2410c':'#091426'}}>{d.getDate()}</div>
-                      {isExam&&<div style={{fontSize:9,color:'#ea580c',fontWeight:700}}>EXAMEN</div>}
+                      {isExam&&<div style={{fontSize:9,color:'#ea580c',fontWeight:700}}>EXAMEN {examEntry.from}-{examEntry.to}</div>}
                     </div>
                   </th>
                 );
@@ -2047,7 +2073,7 @@ function Horario({slots,setSlots,students,vehicles,professors,user,examDays,setE
                 <td style={{padding:'2px 6px',fontSize:10,color:'#94a3b8',verticalAlign:'top',whiteSpace:'nowrap'}}>{time}</td>
                 {week.map((d,di)=>{
                   const ds=ymd(d);
-                  const isExam=examDays.includes(ds);
+                  const isExam=examBlocksHour(ds,time);
                   return visProfs.map(prof=>{
                     const cs=Object.values(slots).filter(s=>s.date===ds&&s.time===time&&s.profId===prof.id&&(fType==='all'||s.slotType===fType));
                     return(

@@ -388,7 +388,11 @@ async function loadAvailability() {
   return null;
 }
 
-// ── Días de examen (bloquean el día entero para clases) ───
+// ── Días de examen (bloquean solo el rango de horas del examen, no el día
+// entero — los exámenes son solo por la mañana; la tarde sigue disponible
+// para clases normales) ───
+const EXAM_DEFAULT_FROM = '09:00';
+const EXAM_DEFAULT_TO   = '14:00';
 async function loadExamDays() {
   if (USE_SUPABASE) {
     const q = supabase.from('school_config').select('extra_config');
@@ -396,9 +400,19 @@ async function loadExamDays() {
     const { data, error } = await q;
     if (error) { console.error('Supabase loadExamDays:', error.message); return []; }
     const ec = data?.[0]?.extra_config;
-    return Array.isArray(ec?.exam_days) ? ec.exam_days.map(d => String(d).substring(0, 10)) : [];
+    const raw = Array.isArray(ec?.exam_days) ? ec.exam_days : [];
+    // Compatibilidad: entradas antiguas eran solo la fecha (día entero). Las
+    // nuevas traen su propio rango horario elegido en el CRM.
+    return raw.map(e => typeof e === 'string'
+      ? { date: e.substring(0, 10), from: EXAM_DEFAULT_FROM, to: EXAM_DEFAULT_TO }
+      : { date: String(e.date).substring(0, 10), from: e.from || EXAM_DEFAULT_FROM, to: e.to || EXAM_DEFAULT_TO }
+    );
   }
   return [];
+}
+function examBlocksHour(examDays, date, hour) {
+  const e = examDays.find(x => x.date === date);
+  return !!e && hour >= e.from && hour < e.to;
 }
 
 // ── Horario de pista: {lun:[horas], mar:[...]} ── (null = sin restricción)
@@ -744,13 +758,13 @@ async function nextFreeSlots(profId, count = 8, fromDate = null, pistaHours = nu
     if (dow === 0) continue; // sin domingos
     const date  = ymdLocal(dt);
     if (untilDate && date > untilDate) break; // no proponer más allá de la semana tope
-    if (examDays.includes(date)) continue; // día de examen: sin clases
     // Horario de pista: si el alumno es de pista, solo estas horas ese día
     const pistaDia = pistaHours ? (pistaHours[DAY_KEY_MAP[dow]] || []) : null;
 
     // Recolectamos los huecos válidos del día y luego (Pedro) los reordenamos
     const dayHoles = [];
     for (const hour of hoursForProfDaySync(avail, profId, dow)) {
+      if (examBlocksHour(examDays, date, hour)) continue; // dentro del rango del examen ese día
       if (pistaDia && !pistaDia.includes(hour)) continue; // fuera del horario de pista
       if (isBlockedSlotSync(blocked, profId, date, hour)) continue;
       // Ocupado si CUALQUIER clase existente se solapa con estos 45 min (no solo
@@ -791,7 +805,7 @@ async function isSlotFree(profId, date, time) {
   ]);
   const d10 = String(date).substring(0, 10);
   const hh  = String(time).substring(0, 5);
-  if (examDays.includes(d10)) return false;
+  if (examBlocksHour(examDays, d10, hh)) return false;
   // El profesor tiene que TRABAJAR ese día a esa hora. Faltaba comprobarlo:
   // las horas del flujo normal salen de nextFreeSlots (que sí lo respeta),
   // pero la clase doble elige la hora por su cuenta y podía colarse fuera del
