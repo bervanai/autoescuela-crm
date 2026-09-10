@@ -1273,6 +1273,15 @@ async function sendBookingRequests(force = false) {
   const nextMon = ymdLocal(nextWeekMonday());
   let fallidos = 0;
   const fallidosNombres = [];
+  // Alumnos activos con el bot activado pero SIN teléfono: no hay forma de
+  // contactarlos por WhatsApp, así que ni siquiera entran en el bucle de
+  // abajo — pero eso no puede pasar en silencio para siempre. Se avisan como
+  // el resto de fallos, para que la oficina sepa que hay que rellenarles el
+  // teléfono si de verdad quiere que la campaña les llegue.
+  for (const st of allStudents.filter(s => s.active && s.botActive !== false && !s.phone)) {
+    fallidos++;
+    fallidosNombres.push(`${st.name} (sin teléfono en su ficha)`);
+  }
   for (const st of students) {
     // Red de seguridad por alumno: si uno falla (teléfono raro, bache de Meta,
     // error puntual de BD) se registra y la campaña SIGUE con los demás. Antes
@@ -1384,7 +1393,16 @@ async function sendReminders() {
   for (const slot of toRemind) {
     const studentId = slot.studentId ?? slot.student_id;
     const st = students.find(s => s.id === studentId);
-    if (!st?.phone) continue;
+    // Sin teléfono no hay forma de avisar por WhatsApp — pero la clase es
+    // real y en menos de 48h, así que la oficina tiene que saberlo para
+    // avisar a mano. Antes esto se saltaba en silencio, sin contar ni
+    // avisar a nadie (caso real: un alumno con clase el mismo día y sin
+    // teléfono en su ficha, sin ningún aviso en ningún sitio).
+    if (!st?.phone) {
+      fallidos++;
+      fallidosNombres.push(`${st?.name || studentId} (sin teléfono — avisar a mano)`);
+      continue;
+    }
 
     try {
       const cita = `${slot.dayName || formatDate(slot.date)} a las ${slot.time}h`;
