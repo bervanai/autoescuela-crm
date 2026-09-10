@@ -5,6 +5,15 @@
 
 require('dotenv').config();
 
+// ── INTERRUPTOR GENERAL ───────────────────────────────────
+// Contrato con la autoescuela finalizado (10/09/2026): el bot deja de
+// mandar y de responder mensajes por WhatsApp por completo — ni campaña,
+// ni recordatorios, ni conversaciones nuevas, ni botones manuales del CRM.
+// El CRM (gestión de alumnos/horario en Supabase) sigue funcionando, porque
+// no depende de este servidor. Esto NO cancela las suscripciones de pago de
+// Railway/Twilio/Meta — eso requiere entrar a esas cuentas directamente.
+const BOT_DISABLED = true;
+
 const express = require('express');
 const twilio  = require('twilio');
 const cron    = require('node-cron');
@@ -1615,6 +1624,9 @@ function turnoDe(phone) {
 }
 
 app.post('/bot', async (req, res) => {
+  // Bot desactivado (contrato finalizado): confirmar recepción sin procesar
+  // nada, para que Meta/Twilio no marquen el webhook como caído.
+  if (BOT_DISABLED) return res.sendStatus(200);
   const isMeta = !!req.body?.entry;
   // Cada proveedor firma a su manera: Twilio con el Auth Token, Meta con el
   // secreto de la app. Se valida la que corresponda al origen de la petición.
@@ -2283,6 +2295,9 @@ async function backupNextWeekSchedule() {
 // ════════════════════════════════════════════════════════════
 // CRONS
 // ════════════════════════════════════════════════════════════
+if (BOT_DISABLED) {
+  console.log('🚫 BOT_DISABLED: no se registra ningún cron (sin campaña, sin recordatorios, sin backups).');
+} else {
 
 // Cada día a las 23:59 → copia de seguridad del horario de la semana que viene
 cron.schedule('59 23 * * *', backupNextWeekSchedule, { timezone: 'Europe/Madrid' });
@@ -2353,6 +2368,8 @@ cron.schedule('59 23 * * 4', async () => {
 
 // Cada hora, barrido de conversaciones caducadas (evita que se acumulen)
 cron.schedule('30 * * * *', purgeExpiredPending, { timezone: 'Europe/Madrid' });
+
+} // fin if (!BOT_DISABLED)
 
 // ════════════════════════════════════════════════════════════
 // RUTAS DE TEST
@@ -2475,6 +2492,7 @@ app.get('/api/ping', (req, res) => {
 
 // POST /api/send-booking/:studentId
 app.post('/api/send-booking/:studentId', async (req, res) => {
+  if (BOT_DISABLED) return res.status(503).json({ error: 'El bot está desactivado.' });
   const students = await loadStudents();
   const st = students.find(s => s.id === req.params.studentId);
   if (!st)             return res.status(404).json({ error: 'Alumno no encontrado' });
@@ -2527,6 +2545,7 @@ app.post('/api/send-booking/:studentId', async (req, res) => {
 
 // POST /api/send-reminder/:slotId
 app.post('/api/send-reminder/:slotId', async (req, res) => {
+  if (BOT_DISABLED) return res.status(503).json({ error: 'El bot está desactivado.' });
   const slots = await loadSlots();
   const slot  = slots.find(s => s.id === req.params.slotId);
   if (!slot) return res.status(404).json({ error: 'Clase no encontrada' });
@@ -2573,6 +2592,7 @@ app.post('/api/send-reminder/:slotId', async (req, res) => {
 // avisar al alumno por WhatsApp. Recibe los datos de la clase (el slot puede
 // que ya no exista en la BD). Envía la plantilla clase_cancelada.
 app.post('/api/notify-cancel', async (req, res) => {
+  if (BOT_DISABLED) return res.status(503).json({ error: 'El bot está desactivado.' });
   const { studentId, phone, date, time, dayName, end } = req.body || {};
   let name = req.body?.name || '';
   let to = phone || null;
@@ -2603,6 +2623,7 @@ app.post('/api/notify-cancel', async (req, res) => {
 // POST /api/notify-move — el ADMIN movió una clase en el panel a otra hora/día
 // y quiere avisar al alumno por WhatsApp. Envía la plantilla clase_movida.
 app.post('/api/notify-move', async (req, res) => {
+  if (BOT_DISABLED) return res.status(503).json({ error: 'El bot está desactivado.' });
   const b = req.body || {};
   let name = b.name || '';
   let to = b.phone || null;
